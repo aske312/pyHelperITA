@@ -1,0 +1,12 @@
+services:
+  bot:
+    build:
+      context: ..
+      dockerfile: config/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    volumes:
+      - ../data:/app/data
+      - ../backups:/app/backups
+    command: ["bot"]
