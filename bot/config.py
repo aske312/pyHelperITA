@@ -23,7 +23,8 @@ class Settings(BaseSettings):
     database_path: Path = Path("data/base.sqlite3")
     app_timezone: str = "Europe/Moscow"
     owner_telegram_id: int | None = Field(
-        default=None, validation_alias=AliasChoices("OWNER_TELEGRAM_ID", "ADMIN_TELEGRAM_ID")
+        default=None,
+        validation_alias=AliasChoices("OWNER_TELEGRAM_ID", "ADMIN_TELEGRAM_ID"),
     )
     owner_full_name: str = Field(
         default="", validation_alias=AliasChoices("OWNER_FULL_NAME", "ADMIN_FULL_NAME")
@@ -42,9 +43,9 @@ class Settings(BaseSettings):
     technical_logging_enabled: bool = True
     log_directory: Path = Path("logs")
     log_level: str = "INFO"
-    log_max_bytes: int = Field(default=10_485_760, ge=1024)
-    log_backup_count: int = Field(default=5, ge=1, le=100)
-    technical_log_interval_seconds: int = Field(default=60, ge=5, le=86400)
+    log_max_bytes: int = Field(default=2_097_152, ge=1024)
+    log_backup_count: int = Field(default=3, ge=1, le=100)
+    technical_log_interval_seconds: int = Field(default=300, ge=30, le=86400)
     default_reminder_time: str = "09:00"
     default_reminder_text: str = "Напоминание: ваш отпуск начинается {start_date}."
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 
 from bot.models import (
@@ -45,6 +45,22 @@ CREATE TABLE IF NOT EXISTS employees (
     mentor_id INTEGER REFERENCES employees(id) ON DELETE SET NULL,
     is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
     created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS employee_contacts (
+    employee_id INTEGER PRIMARY KEY REFERENCES employees(id) ON DELETE CASCADE,
+    phone TEXT, work_email TEXT, personal_email TEXT, location TEXT
+);
+CREATE TABLE IF NOT EXISTS employee_work_profiles (
+    employee_id INTEGER PRIMARY KEY REFERENCES employees(id) ON DELETE CASCADE,
+    birth_date TEXT,
+    english_level TEXT,
+    employment_date TEXT,
+    office_city TEXT,
+    work_format TEXT CHECK (work_format IN ('hybrid', 'remote', 'office')),
+    grade TEXT CHECK (grade IN ('Intern', 'Junior', 'Middle', 'Senior', 'RM1')),
+    direction TEXT CHECK (direction IN ('SA', 'QA', 'DEV', 'HR')),
+    project_name TEXT,
+    project_start_date TEXT
 );
 CREATE TABLE IF NOT EXISTS teams (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -90,6 +106,10 @@ CREATE TABLE IF NOT EXISTS scheduled_notifications (
         CHECK (status IN ('pending', 'sent', 'cancelled')),
     created_by_employee_id INTEGER NOT NULL REFERENCES employees(id),
     recipient_roles TEXT NOT NULL DEFAULT 'owner,team_lead,employee',
+    target_team_id INTEGER REFERENCES teams(id) ON DELETE CASCADE,
+    recipient_employee_ids TEXT NOT NULL DEFAULT '',
+    repeat_interval_minutes INTEGER CHECK (repeat_interval_minutes > 0),
+    repeats_remaining INTEGER NOT NULL DEFAULT 1 CHECK (repeats_remaining > 0),
     delivered_count INTEGER NOT NULL DEFAULT 0,
     failed_count INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
@@ -97,6 +117,13 @@ CREATE TABLE IF NOT EXISTS scheduled_notifications (
 );
 CREATE INDEX IF NOT EXISTS idx_scheduled_notifications_due
 ON scheduled_notifications(status, scheduled_at);
+CREATE TABLE IF NOT EXISTS system_notification_log (
+    event_type TEXT NOT NULL,
+    employee_id INTEGER NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+    event_key TEXT NOT NULL,
+    sent_at TEXT NOT NULL,
+    PRIMARY KEY (event_type, employee_id, event_key)
+);
 """
 
 
@@ -119,6 +146,8 @@ def format_display_name(full_name: str) -> str:
         return full_name
     initials = "".join(f"{part[0].upper()}." for part in parts[1:])
     return f"{parts[0]} {initials}"
+
+
 class Database:
     def __init__(self, path: Path | str):
         self.path = Path(path)
@@ -148,7 +177,9 @@ class Database:
         if row is None or "'admin'" not in str(row["sql"]):
             return
         connection.execute("PRAGMA foreign_keys = OFF")
-        columns = {item["name"] for item in connection.execute("PRAGMA table_info(employees)")}
+        columns = {
+            item["name"] for item in connection.execute("PRAGMA table_info(employees)")
+        }
         lead_column = "manager_id" if "manager_id" in columns else "team_lead_id"
         connection.executescript(
             f"""
@@ -189,6 +220,7 @@ class Database:
             """
         )
         connection.execute("PRAGMA foreign_keys = ON")
+
     @staticmethod
     def _migrate_guest_role(connection: sqlite3.Connection) -> None:
         row = connection.execute(
@@ -227,10 +259,28 @@ class Database:
             """
         )
         connection.execute("PRAGMA foreign_keys = ON")
+
     def initialize(self) -> None:
         with self.connect() as connection:
             self._migrate_employee_roles(connection)
+            had_system_log = (
+                connection.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+                    "AND name = 'system_notification_log'"
+                ).fetchone()
+                is not None
+            )
             connection.executescript(SCHEMA)
+            if not had_system_log:
+                now = datetime.now().isoformat(timespec="seconds")
+                connection.execute(
+                    """INSERT OR IGNORE INTO system_notification_log(
+                           event_type, employee_id, event_key, sent_at
+                       )
+                       SELECT 'vacation_added', employee_id, CAST(id AS TEXT), ?
+                       FROM vacations""",
+                    (now,),
+                )
             columns = {
                 row["name"]
                 for row in connection.execute("PRAGMA table_info(employees)")
@@ -258,21 +308,40 @@ class Database:
                 "WHERE role = 'team_lead'"
             )
             pre_guest_migrations = {
-                "telegram_username": "TEXT", "telegram_first_name": "TEXT",
-                "telegram_last_name": "TEXT", "telegram_tag": "TEXT",
-                "birth_date": "TEXT", "phone": "TEXT", "email": "TEXT",
-                "personal_email": "TEXT", "english_level": "TEXT",
-                "employment_date": "TEXT", "mentor_id": "INTEGER",
-                "location": "TEXT", "office_city": "TEXT", "work_format": "TEXT",
-                "grade": "TEXT", "direction": "TEXT", "project_name": "TEXT",
-                "project_start_date": "TEXT", "profile_completed": "INTEGER NOT NULL DEFAULT 1",
+                "telegram_username": "TEXT",
+                "telegram_first_name": "TEXT",
+                "telegram_last_name": "TEXT",
+                "telegram_tag": "TEXT",
+                "birth_date": "TEXT",
+                "phone": "TEXT",
+                "email": "TEXT",
+                "personal_email": "TEXT",
+                "english_level": "TEXT",
+                "employment_date": "TEXT",
+                "mentor_id": "INTEGER",
+                "location": "TEXT",
+                "office_city": "TEXT",
+                "work_format": "TEXT",
+                "grade": "TEXT",
+                "direction": "TEXT",
+                "project_name": "TEXT",
+                "project_start_date": "TEXT",
+                "profile_completed": "INTEGER NOT NULL DEFAULT 1",
             }
-            columns = {row["name"] for row in connection.execute("PRAGMA table_info(employees)")}
+            columns = {
+                row["name"]
+                for row in connection.execute("PRAGMA table_info(employees)")
+            }
             for name, definition in pre_guest_migrations.items():
                 if name not in columns:
-                    connection.execute(f"ALTER TABLE employees ADD COLUMN {name} {definition}")
+                    connection.execute(
+                        f"ALTER TABLE employees ADD COLUMN {name} {definition}"
+                    )
             self._migrate_guest_role(connection)
-            columns = {row["name"] for row in connection.execute("PRAGMA table_info(employees)")}
+            columns = {
+                row["name"]
+                for row in connection.execute("PRAGMA table_info(employees)")
+            }
             migrations = {
                 "telegram_username": "TEXT",
                 "telegram_first_name": "TEXT",
@@ -300,11 +369,37 @@ class Database:
                     connection.execute(
                         f"ALTER TABLE employees ADD COLUMN {name} {definition}"
                     )
+            connection.executescript(
+                """
+                INSERT OR IGNORE INTO employee_contacts(
+                    employee_id, phone, work_email, personal_email, location
+                ) SELECT id, phone, email, personal_email, location FROM employees;
+                INSERT OR IGNORE INTO employee_work_profiles(
+                    employee_id, birth_date, english_level, employment_date,
+                    office_city, work_format, grade, direction, project_name,
+                    project_start_date
+                ) SELECT id, birth_date, english_level, employment_date,
+                    office_city, work_format, grade, direction, project_name,
+                    project_start_date FROM employees;
+                """
+            )
             notification_columns = {
-                row["name"] for row in connection.execute(
+                row["name"]
+                for row in connection.execute(
                     "PRAGMA table_info(scheduled_notifications)"
                 )
             }
+            notification_migrations = {
+                "target_team_id": "INTEGER REFERENCES teams(id) ON DELETE CASCADE",
+                "recipient_employee_ids": "TEXT NOT NULL DEFAULT ''",
+                "repeat_interval_minutes": "INTEGER",
+                "repeats_remaining": "INTEGER NOT NULL DEFAULT 1",
+            }
+            for name, definition in notification_migrations.items():
+                if name not in notification_columns:
+                    connection.execute(
+                        f"ALTER TABLE scheduled_notifications ADD COLUMN {name} {definition}"
+                    )
             if "recipient_roles" not in notification_columns:
                 connection.execute(
                     "ALTER TABLE scheduled_notifications ADD COLUMN recipient_roles "
@@ -458,7 +553,34 @@ class Database:
                 )
         return self.get_employee(employee_id)
 
-    def list_notification_recipients(self, roles: tuple[str, ...]) -> list[int]:
+    def list_notification_recipients(
+        self,
+        roles: tuple[str, ...],
+        target_team_id: int | None = None,
+        recipient_employee_ids: tuple[int, ...] = (),
+    ) -> list[int]:
+        if recipient_employee_ids:
+            placeholders = ", ".join("?" for _ in recipient_employee_ids)
+            with self.connect() as connection:
+                rows = connection.execute(
+                    f"""SELECT telegram_user_id FROM employees
+                        WHERE id IN ({placeholders}) AND is_active = 1
+                          AND telegram_user_id IS NOT NULL""",
+                    recipient_employee_ids,
+                ).fetchall()
+            return sorted({int(row["telegram_user_id"]) for row in rows})
+        if target_team_id is not None:
+            team = self.get_team(target_team_id)
+            recipients = self.list_team_members(target_team_id) + [
+                self.get_employee(team.lead_id)
+            ]
+            return sorted(
+                {
+                    item.telegram_user_id
+                    for item in recipients
+                    if item.telegram_user_id is not None and item.is_active
+                }
+            )
         if not roles:
             return []
         role_values = tuple(role for role in roles if role != "team_lead")
@@ -474,31 +596,62 @@ class Database:
                 f"""SELECT DISTINCT telegram_user_id FROM employees
                     WHERE is_active = 1 AND profile_completed = 1
                       AND telegram_user_id IS NOT NULL
-                      AND ({' OR '.join(conditions)})""",
+                      AND ({" OR ".join(conditions)})""",
                 tuple(params),
             ).fetchall()
         return [int(row["telegram_user_id"]) for row in rows]
 
     def add_scheduled_notification(
-        self, scheduled_at: datetime, message_text: str, created_by_employee_id: int,
+        self,
+        scheduled_at: datetime,
+        message_text: str,
+        created_by_employee_id: int,
         recipient_roles: tuple[str, ...] = ("owner", "team_lead", "employee"),
+        *,
+        target_team_id: int | None = None,
+        recipient_employee_ids: tuple[int, ...] = (),
+        repeat_interval_minutes: int | None = None,
+        repeat_count: int = 1,
     ) -> ScheduledNotification:
         text = message_text.strip()
         if not text:
             raise ValueError("Текст уведомления не может быть пустым")
-        invalid_roles = set(recipient_roles) - {"guest", "employee", "team_lead", "owner"}
-        if invalid_roles or not recipient_roles:
+        invalid_roles = set(recipient_roles) - {
+            "guest",
+            "employee",
+            "team_lead",
+            "owner",
+        }
+        if (
+            (invalid_roles or not recipient_roles)
+            and target_team_id is None
+            and not recipient_employee_ids
+        ):
             raise ValueError("Некорректные группы получателей")
+        if target_team_id is not None:
+            self.get_team(target_team_id)
+        if repeat_count < 1:
+            raise ValueError("Количество отправок должно быть положительным")
+        if repeat_count > 1 and (
+            repeat_interval_minutes is None or repeat_interval_minutes < 1
+        ):
+            raise ValueError("Для повторов укажите положительный интервал")
         with self.connect() as connection:
             cursor = connection.execute(
                 """INSERT INTO scheduled_notifications(
-                       scheduled_at, message_text, created_by_employee_id, recipient_roles, created_at
-                   ) VALUES (?, ?, ?, ?, ?)""",
+                       scheduled_at, message_text, created_by_employee_id, recipient_roles,
+                       target_team_id, recipient_employee_ids, repeat_interval_minutes,
+                       repeats_remaining, created_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     scheduled_at.isoformat(timespec="minutes"),
                     text,
                     created_by_employee_id,
                     ",".join(recipient_roles),
+                    target_team_id,
+                    ",".join(str(item) for item in recipient_employee_ids),
+                    repeat_interval_minutes,
+                    repeat_count,
                     datetime.now().isoformat(timespec="seconds"),
                 ),
             )
@@ -541,7 +694,12 @@ class Database:
     def update_notification_roles(
         self, notification_id: int, recipient_roles: tuple[str, ...]
     ) -> ScheduledNotification:
-        invalid_roles = set(recipient_roles) - {"guest", "employee", "team_lead", "owner"}
+        invalid_roles = set(recipient_roles) - {
+            "guest",
+            "employee",
+            "team_lead",
+            "owner",
+        }
         if invalid_roles or not recipient_roles:
             raise ValueError("Некорректные группы получателей")
         with self.connect() as connection:
@@ -553,21 +711,72 @@ class Database:
             if cursor.rowcount == 0:
                 raise LookupError("Активное уведомление не найдено")
         return self.get_scheduled_notification(notification_id)
+
     def finish_scheduled_notification(
         self, notification_id: int, delivered_count: int, failed_count: int
     ) -> None:
         with self.connect() as connection:
-            connection.execute(
+            row = connection.execute(
+                """SELECT scheduled_at, repeat_interval_minutes, repeats_remaining
+                   FROM scheduled_notifications WHERE id = ? AND status = 'pending'""",
+                (notification_id,),
+            ).fetchone()
+            if row is None:
+                return
+            remaining = int(row["repeats_remaining"])
+            interval = row["repeat_interval_minutes"]
+            now = datetime.now().isoformat(timespec="seconds")
+            if remaining > 1 and interval is not None:
+                next_at = datetime.fromisoformat(str(row["scheduled_at"])) + timedelta(
+                    minutes=int(interval)
+                )
+                connection.execute(
+                    """UPDATE scheduled_notifications
+                       SET scheduled_at = ?, repeats_remaining = ?,
+                           delivered_count = delivered_count + ?,
+                           failed_count = failed_count + ?, sent_at = ?
+                       WHERE id = ?""",
+                    (
+                        next_at.isoformat(timespec="minutes"),
+                        remaining - 1,
+                        delivered_count,
+                        failed_count,
+                        now,
+                        notification_id,
+                    ),
+                )
+            else:
+                connection.execute(
+                    """UPDATE scheduled_notifications
+                       SET status = 'sent',
+                           delivered_count = delivered_count + ?,
+                           failed_count = failed_count + ?, sent_at = ?
+                       WHERE id = ?""",
+                    (delivered_count, failed_count, now, notification_id),
+                )
+
+    def update_notification_schedule(
+        self,
+        notification_id: int,
+        repeat_interval_minutes: int | None,
+        repeat_count: int,
+    ) -> ScheduledNotification:
+        if repeat_count < 1:
+            raise ValueError("Количество отправок должно быть положительным")
+        if repeat_count > 1 and (
+            repeat_interval_minutes is None or repeat_interval_minutes < 1
+        ):
+            raise ValueError("Для повторов необходим положительный интервал")
+        with self.connect() as connection:
+            cursor = connection.execute(
                 """UPDATE scheduled_notifications
-                   SET status = 'sent', delivered_count = ?, failed_count = ?, sent_at = ?
+                   SET repeat_interval_minutes = ?, repeats_remaining = ?
                    WHERE id = ? AND status = 'pending'""",
-                (
-                    delivered_count,
-                    failed_count,
-                    datetime.now().isoformat(timespec="seconds"),
-                    notification_id,
-                ),
+                (repeat_interval_minutes, repeat_count, notification_id),
             )
+            if cursor.rowcount == 0:
+                raise LookupError("Активная нотификация не найдена")
+        return self.get_scheduled_notification(notification_id)
 
     def cancel_scheduled_notification(self, notification_id: int) -> bool:
         with self.connect() as connection:
@@ -671,6 +880,17 @@ class Database:
                 raise LookupError(f"Сотрудник #{employee_id} не найден")
         return self.get_employee(employee_id)
 
+    def delete_employee(self, employee_id: int) -> None:
+        employee = self.get_employee(employee_id)
+        if employee.role == "owner":
+            raise ValueError("Нельзя удалить владельца продукта")
+        with self.connect() as connection:
+            cursor = connection.execute(
+                "DELETE FROM employees WHERE id = ?", (employee_id,)
+            )
+            if cursor.rowcount == 0:
+                raise LookupError(f"Сотрудник #{employee_id} не найден")
+
     def get_employee(self, employee_id: int) -> Employee:
         with self.connect() as connection:
             row = connection.execute(
@@ -737,7 +957,9 @@ class Database:
                     (normalized, lead_id, datetime.now().isoformat(timespec="seconds")),
                 )
             except sqlite3.IntegrityError as error:
-                raise ValueError("Название или тимлид уже используются другой командой") from error
+                raise ValueError(
+                    "Название или тимлид уже используются другой командой"
+                ) from error
         return self.get_team(int(cursor.lastrowid))
 
     def get_team(self, team_id: int) -> Team:
@@ -807,6 +1029,77 @@ class Database:
                     (employee_id, team.lead_id),
                 )
         return cursor.rowcount > 0
+
+    def delete_team(self, team_id: int) -> None:
+        team = self.get_team(team_id)
+        with self.connect() as connection:
+            connection.execute(
+                "UPDATE employees SET team_lead_id = NULL WHERE team_lead_id = ?",
+                (team.lead_id,),
+            )
+            cursor = connection.execute("DELETE FROM teams WHERE id = ?", (team_id,))
+            if cursor.rowcount == 0:
+                raise LookupError(f"Команда #{team_id} не найдена")
+
+    def was_system_notification_sent(
+        self, event_type: str, employee_id: int, event_key: str
+    ) -> bool:
+        with self.connect() as connection:
+            row = connection.execute(
+                """SELECT 1 FROM system_notification_log
+                   WHERE event_type = ? AND employee_id = ? AND event_key = ?""",
+                (event_type, employee_id, event_key),
+            ).fetchone()
+        return row is not None
+
+    def mark_system_notification_sent(
+        self, event_type: str, employee_id: int, event_key: str
+    ) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                """INSERT OR IGNORE INTO system_notification_log(
+                       event_type, employee_id, event_key, sent_at
+                   ) VALUES (?, ?, ?, ?)""",
+                (
+                    event_type,
+                    employee_id,
+                    event_key,
+                    datetime.now().isoformat(timespec="seconds"),
+                ),
+            )
+
+    def list_pending_vacation_lead_notifications(
+        self,
+    ) -> list[tuple[int, int, str, int, date, date]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """SELECT v.id, e.id AS employee_id, e.full_name,
+                          lead.telegram_user_id AS lead_telegram_user_id,
+                          v.start_date, v.end_date
+                   FROM vacations v
+                   JOIN employees e ON e.id = v.employee_id
+                   JOIN employees lead ON lead.id = e.team_lead_id
+                   LEFT JOIN system_notification_log log
+                     ON log.event_type = 'vacation_added'
+                    AND log.employee_id = e.id
+                    AND log.event_key = CAST(v.id AS TEXT)
+                   WHERE log.event_key IS NULL
+                     AND lead.telegram_user_id IS NOT NULL
+                     AND e.is_active = 1
+                   ORDER BY v.id"""
+            ).fetchall()
+        return [
+            (
+                int(row["id"]),
+                int(row["employee_id"]),
+                str(row["full_name"]),
+                int(row["lead_telegram_user_id"]),
+                date.fromisoformat(str(row["start_date"])),
+                date.fromisoformat(str(row["end_date"])),
+            )
+            for row in rows
+        ]
+
     def add_vacation(
         self, employee_id: int, start_date: date, end_date: date
     ) -> Vacation:
@@ -853,7 +1146,12 @@ class Database:
                 """SELECT 1 FROM vacations
                    WHERE employee_id = ? AND id != ?
                      AND start_date <= ? AND end_date >= ? LIMIT 1""",
-                (current.employee_id, vacation_id, end_date.isoformat(), start_date.isoformat()),
+                (
+                    current.employee_id,
+                    vacation_id,
+                    end_date.isoformat(),
+                    start_date.isoformat(),
+                ),
             ).fetchone()
             if overlap:
                 raise ValueError("Отпуск пересекается с уже сохраненным периодом")
@@ -865,6 +1163,7 @@ class Database:
                 "DELETE FROM sent_reminders WHERE vacation_id = ?", (vacation_id,)
             )
         return self.get_vacation(vacation_id)
+
     def delete_vacation(self, vacation_id: int) -> None:
         with self.connect() as connection:
             cursor = connection.execute(
@@ -1029,20 +1328,36 @@ class Database:
             ),
             phone=str(row["phone"]) if row["phone"] is not None else None,
             location=str(row["location"]) if row["location"] is not None else None,
-            office_city=str(row["office_city"]) if row["office_city"] is not None else None,
-            work_format=str(row["work_format"]) if row["work_format"] is not None else None,
+            office_city=str(row["office_city"])
+            if row["office_city"] is not None
+            else None,
+            work_format=str(row["work_format"])
+            if row["work_format"] is not None
+            else None,
             email=str(row["email"]) if row["email"] is not None else None,
-            personal_email=(str(row["personal_email"])
-                            if row["personal_email"] is not None else None),
-            english_level=(str(row["english_level"])
-                           if row["english_level"] is not None else None),
-            employment_date=(date.fromisoformat(str(row["employment_date"]))
-                             if row["employment_date"] is not None else None),
+            personal_email=(
+                str(row["personal_email"])
+                if row["personal_email"] is not None
+                else None
+            ),
+            english_level=(
+                str(row["english_level"]) if row["english_level"] is not None else None
+            ),
+            employment_date=(
+                date.fromisoformat(str(row["employment_date"]))
+                if row["employment_date"] is not None
+                else None
+            ),
             grade=str(row["grade"]) if row["grade"] is not None else None,
             direction=str(row["direction"]) if row["direction"] is not None else None,
-            project_name=str(row["project_name"]) if row["project_name"] is not None else None,
-            project_start_date=(date.fromisoformat(str(row["project_start_date"]))
-                                if row["project_start_date"] is not None else None),
+            project_name=str(row["project_name"])
+            if row["project_name"] is not None
+            else None,
+            project_start_date=(
+                date.fromisoformat(str(row["project_start_date"]))
+                if row["project_start_date"] is not None
+                else None
+            ),
             profile_completed=bool(row["profile_completed"]),
             is_active=bool(row["is_active"]),
             created_at=datetime.fromisoformat(str(row["created_at"])),
@@ -1057,6 +1372,7 @@ class Database:
             lead_name=str(row["lead_name"]),
             created_at=datetime.fromisoformat(str(row["created_at"])),
         )
+
     @staticmethod
     def _vacation_from_row(row: sqlite3.Row) -> Vacation:
         return Vacation(
@@ -1077,7 +1393,9 @@ class Database:
             employee_name=str(row["full_name"]),
             telegram_user_id=int(telegram_id) if telegram_id is not None else None,
             team_lead_telegram_user_id=(
-                int(team_lead_telegram_id) if team_lead_telegram_id is not None else None
+                int(team_lead_telegram_id)
+                if team_lead_telegram_id is not None
+                else None
             ),
             start_date=date.fromisoformat(str(row["start_date"])),
             end_date=date.fromisoformat(str(row["end_date"])),
@@ -1093,6 +1411,22 @@ class Database:
             status=str(row["status"]),
             created_by_employee_id=int(row["created_by_employee_id"]),
             recipient_roles=tuple(str(row["recipient_roles"]).split(",")),
+            target_team_id=(
+                int(row["target_team_id"])
+                if row["target_team_id"] is not None
+                else None
+            ),
+            recipient_employee_ids=tuple(
+                int(item)
+                for item in str(row["recipient_employee_ids"]).split(",")
+                if item
+            ),
+            repeat_interval_minutes=(
+                int(row["repeat_interval_minutes"])
+                if row["repeat_interval_minutes"] is not None
+                else None
+            ),
+            repeats_remaining=int(row["repeats_remaining"]),
             delivered_count=int(row["delivered_count"]),
             failed_count=int(row["failed_count"]),
             created_at=datetime.fromisoformat(str(row["created_at"])),

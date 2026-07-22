@@ -43,6 +43,7 @@ class Team:
     lead_name: str
     created_at: datetime
 
+
 @dataclass(frozen=True, slots=True)
 class Vacation:
     id: int
@@ -85,6 +86,10 @@ class ScheduledNotification:
     status: str
     created_by_employee_id: int
     recipient_roles: tuple[str, ...]
+    target_team_id: int | None
+    recipient_employee_ids: tuple[int, ...]
+    repeat_interval_minutes: int | None
+    repeats_remaining: int
     delivered_count: int
     failed_count: int
     created_at: datetime

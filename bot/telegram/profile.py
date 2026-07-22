@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from datetime import date, datetime
+from html import escape
 
 from aiogram import F, Router
 from aiogram.filters import Command
@@ -21,14 +22,20 @@ class ProfileForm(StatesGroup):
 
 FORMAT_LABELS = {"hybrid": "Гибрид", "remote": "Удаленка", "office": "Офис"}
 EDITABLE_FIELDS = (
-    ("ФИО", "full_name"), ("Дата рождения", "birth_date"),
-    ("Телефон", "phone"), ("Email", "email"), ("Email_P", "personal_email"),
+    ("ФИО", "full_name"),
+    ("Дата рождения", "birth_date"),
+    ("Телефон", "phone"),
+    ("Email", "email"),
+    ("Личный Email", "personal_email"),
     ("Локация", "location"),
-    ("Город офиса", "office_city"), ("Формат работы", "work_format"),
+    ("Город офиса", "office_city"),
+    ("Формат работы", "work_format"),
     ("Владение английским", "english_level"),
     ("Дата трудоустройства", "employment_date"),
-    ("Грейд", "grade"), ("Направление", "direction"),
-    ("Боевой проект", "project_name"), ("Дата старта проекта", "project_start_date"),
+    ("Грейд", "grade"),
+    ("Направление", "direction"),
+    ("Боевой проект", "project_name"),
+    ("Дата старта проекта", "project_start_date"),
 )
 
 
@@ -40,34 +47,64 @@ def _buttons(items: list[tuple[str, str]], width: int = 1):
     return builder.as_markup()
 
 
-def _profile_text(profile, *, public: bool = False) -> str:
+def _value(value: object | None, fallback: str = "не указано") -> str:
+    return escape(str(value)) if value else f"<i>{fallback}</i>"
+
+
+def _profile_text(profile, *, details: bool = False, public: bool = False) -> str:
+    full_title = escape(profile.full_name)
+    short_title = escape(format_display_name(profile.full_name))
+    if not details:
+        return (
+            f"👤 <b>{full_title}</b>\n"
+            f"Кратко: <b>{short_title}</b>\n\n"
+            f"🎯 <b>Грейд:</b> {_value(profile.grade, 'не указан')}\n"
+            f"🧭 <b>Направление:</b> {_value(profile.direction)}\n"
+            f"⚔️ <b>Боевой проект:</b> {_value(profile.project_name, 'не указан')}\n"
+            f"📍 <b>Локация:</b> {_value(profile.location, 'не указана')}\n\n"
+            f"☎️ <b>Телефон:</b> {_value(profile.phone, 'не указан')}\n"
+            f"✉️ <b>Рабочая почта:</b> {_value(profile.email, 'не указана')}\n"
+            f"💬 <b>Telegram:</b> {_value(profile.telegram_tag, 'username не задан')}"
+        )
     lines = [
-        format_display_name(profile.full_name),
-        f"Грейд: {profile.grade or 'не указан'}",
-        f"Направление: {profile.direction or 'не указано'}",
-        f"Боевой проект: {profile.project_name or 'не указан'}",
-        (f"Старт на проекте: {profile.project_start_date:%d.%m.%Y}"
-         if profile.project_start_date else "Старт на проекте: не указан"),
-        f"Телефон: {profile.phone or 'не указан'}",
-        f"Email: {profile.email or 'не указан'}",
-        f"Email_P: {profile.personal_email or 'не указан'}",
-        f"Telegram: {profile.telegram_tag or 'без username'}",
-        f"Локация пребывания: {profile.location or 'не указана'}",
-        f"Город офиса: {profile.office_city or 'не указан'}",
-        f"Формат работы: {FORMAT_LABELS.get(profile.work_format, 'не указан')}",
-        f"Владение английским: {profile.english_level or 'не указано'}",
-        (f"Дата трудоустройства: {profile.employment_date:%d.%m.%Y}"
-         if profile.employment_date else "Дата трудоустройства: не указана"),
+        f"📋 <b>Дополнительная информация</b>\n<b>{full_title}</b>\n",
+        f"🏢 <b>Город офиса:</b> {_value(profile.office_city, 'не указан')}",
+        f"💼 <b>Формат работы:</b> {_value(FORMAT_LABELS.get(profile.work_format), 'не указан')}",
+        f"🌐 <b>Английский:</b> {_value(profile.english_level)}",
+        (
+            f"📅 <b>Дата трудоустройства:</b> <code>{profile.employment_date:%d.%m.%Y}</code>"
+            if profile.employment_date
+            else "📅 <b>Дата трудоустройства:</b> <i>не указана</i>"
+        ),
+        (
+            f"🚀 <b>Старт на проекте:</b> <code>{profile.project_start_date:%d.%m.%Y}</code>"
+            if profile.project_start_date
+            else "🚀 <b>Старт на проекте:</b> <i>не указан</i>"
+        ),
+        f"📨 <b>Личная почта:</b> {_value(profile.personal_email, 'не указана')}",
     ]
     if not public:
-        lines.insert(1, f"Дата рождения: {profile.birth_date:%d.%m.%Y}"
-                     if profile.birth_date else "Дата рождения: не указана")
+        birthday = (
+            f"<code>{profile.birth_date:%d.%m.%Y}</code>"
+            if profile.birth_date
+            else "<i>не указана</i>"
+        )
+        lines.insert(1, f"🎂 <b>Дата рождения:</b> {birthday}")
     return "\n".join(lines)
 
 
 def _editor(target_id: int, prefix: str):
-    return _buttons([(label, f"{prefix}:{target_id}:{field}")
-                     for label, field in EDITABLE_FIELDS], 2)
+    return _buttons(
+        [(label, f"{prefix}:{target_id}:{field}") for label, field in EDITABLE_FIELDS],
+        2,
+    )
+
+
+def _profile_actions(target_id: int, *, own: bool, public: bool = False):
+    items = [("📋 Подробнее", f"profile_more:{target_id}:{int(public)}")]
+    if own:
+        items.append(("✏️ Изменить данные", f"profile_edit:{target_id}"))
+    return _buttons(items, 1)
 
 
 def create_profile_router(service: VacationService) -> Router:
@@ -85,10 +122,15 @@ def create_profile_router(service: VacationService) -> Router:
             await message.answer("Сначала зарегистрируйтесь через /start.")
             return
         if profile.role == "guest":
-            await message.answer("Гостю доступен календарь и контакт назначенного тимлида.")
+            await message.answer(
+                "Гостю доступен календарь и контакт назначенного руководителя."
+            )
             return
-        await message.answer(_profile_text(profile) + "\n\nВыберите поле:",
-                             reply_markup=_editor(profile.id, "profilefield"))
+        await message.answer(
+            _profile_text(profile),
+            parse_mode="HTML",
+            reply_markup=_profile_actions(profile.id, own=True),
+        )
 
     @router.message(Command("contacts"))
     async def contacts(message: Message) -> None:
@@ -98,13 +140,22 @@ def create_profile_router(service: VacationService) -> Router:
         if actor is None or not actor.profile_completed:
             await message.answer("Сначала зарегистрируйтесь через /start.")
             return
+        if actor.role == "guest":
+            await message.answer(
+                "⛔ Контакты сотрудников недоступны гостевому профилю."
+            )
+            return
         employees = visible_contacts(actor, service.database.list_employees())
         if not employees:
-            await message.answer("Тимлид не назначен.")
+            await message.answer("Руководитель не назначен.")
             return
-        await message.answer("Контакты сотрудников:", reply_markup=_buttons([
-            (item.full_name, f"contact:{item.id}") for item in employees
-        ]))
+        await message.answer(
+            "👥 <b>Контакты сотрудников</b>\n\nВыберите сотрудника:",
+            parse_mode="HTML",
+            reply_markup=_buttons(
+                [(item.full_name, f"contact:{item.id}") for item in employees]
+            ),
+        )
 
     @router.callback_query(F.data.startswith("contact:"))
     async def show_contact(query: CallbackQuery) -> None:
@@ -116,14 +167,77 @@ def create_profile_router(service: VacationService) -> Router:
         if employee not in visible_contacts(actor, service.database.list_employees()):
             await query.answer("Контакт недоступен.", show_alert=True)
             return
-        await query.message.edit_text(_profile_text(employee, public=True))
+        await query.message.edit_text(
+            _profile_text(employee, public=True),
+            parse_mode="HTML",
+            reply_markup=_profile_actions(employee.id, own=False, public=True),
+        )
+        await query.answer()
+
+    @router.callback_query(F.data.startswith("profile_more:"))
+    async def show_profile_details(query: CallbackQuery) -> None:
+        _, raw_id, raw_public = (query.data or "").split(":")
+        target = service.database.get_employee(int(raw_id))
+        actor = get_actor(query.from_user.id)
+        public = bool(int(raw_public))
+        allowed = actor is not None and (
+            target.id == actor.id
+            or can_manage(actor, target)
+            or target in visible_contacts(actor, service.database.list_employees())
+        )
+        if not allowed:
+            await query.answer("Недостаточно прав.", show_alert=True)
+            return
+        await query.message.edit_text(
+            _profile_text(target, details=True, public=public),
+            parse_mode="HTML",
+            reply_markup=_buttons(
+                [("← Основная информация", f"profile_main:{target.id}:{int(public)}")]
+            ),
+        )
+        await query.answer()
+
+    @router.callback_query(F.data.startswith("profile_main:"))
+    async def show_profile_main(query: CallbackQuery) -> None:
+        _, raw_id, raw_public = (query.data or "").split(":")
+        target = service.database.get_employee(int(raw_id))
+        actor = get_actor(query.from_user.id)
+        public = bool(int(raw_public))
+        if actor is None:
+            await query.answer("Недостаточно прав.", show_alert=True)
+            return
+        await query.message.edit_text(
+            _profile_text(target, public=public),
+            parse_mode="HTML",
+            reply_markup=_profile_actions(
+                target.id, own=target.id == actor.id, public=public
+            ),
+        )
+        await query.answer()
+
+    @router.callback_query(F.data.startswith("profile_edit:"))
+    async def edit_own_profile(query: CallbackQuery) -> None:
+        target_id = int((query.data or "").split(":")[1])
+        actor = get_actor(query.from_user.id)
+        if actor is None or actor.id != target_id:
+            await query.answer("Недостаточно прав.", show_alert=True)
+            return
+        await query.message.edit_text(
+            "✏️ <b>Редактирование профиля</b>\n\nВыберите поле:",
+            parse_mode="HTML",
+            reply_markup=_editor(target_id, "profilefield"),
+        )
         await query.answer()
 
     @router.callback_query(F.data.startswith("manage_profile:"))
     async def manage_profile(query: CallbackQuery) -> None:
         actor = get_actor(query.from_user.id)
         target = service.database.get_employee(int((query.data or "").split(":")[1]))
-        if actor is None or (actor.role != "owner" and not actor.is_team_lead) or not can_manage(actor, target):
+        if (
+            actor is None
+            or (actor.role != "owner" and not actor.is_team_lead)
+            or not can_manage(actor, target)
+        ):
             await query.answer("Недостаточно прав.", show_alert=True)
             return
         await query.message.edit_text(
@@ -132,7 +246,9 @@ def create_profile_router(service: VacationService) -> Router:
         )
         await query.answer()
 
-    @router.callback_query(F.data.startswith("profilefield:") | F.data.startswith("ownerfield:"))
+    @router.callback_query(
+        F.data.startswith("profilefield:") | F.data.startswith("ownerfield:")
+    )
     async def choose_field(query: CallbackQuery, state: FSMContext) -> None:
         prefix, raw_id, field = (query.data or "").split(":")
         actor = get_actor(query.from_user.id)
@@ -145,22 +261,32 @@ def create_profile_router(service: VacationService) -> Router:
             await query.answer("Недостаточно прав.", show_alert=True)
             return
         choices = {
-            "work_format": [("Гибрид", "hybrid"), ("Удаленка", "remote"), ("Офис", "office")],
+            "work_format": [
+                ("Гибрид", "hybrid"),
+                ("Удаленка", "remote"),
+                ("Офис", "office"),
+            ],
             "grade": [(v, v) for v in ("Intern", "Junior", "Middle", "Senior", "RM1")],
             "direction": [(v, v) for v in ("SA", "QA", "DEV", "HR")],
             "project_name": [("Нет проекта", "Нет проекта"), ("Лаба", "Лаба")],
         }
         if field in choices:
-            items = [(label, f"setprofile:{target_id}:{field}:{value}")
-                     for label, value in choices[field]]
+            items = [
+                (label, f"setprofile:{target_id}:{field}:{value}")
+                for label, value in choices[field]
+            ]
             if field == "project_name":
                 items.append(("Ввести вручную", f"manualprofile:{target_id}:{field}"))
-            await query.message.answer("Выберите значение:", reply_markup=_buttons(items, 3))
+            await query.message.answer(
+                "Выберите значение:", reply_markup=_buttons(items, 3)
+            )
             await query.answer()
             return
         prompts = {
-            "full_name": "Введите ФИО:", "birth_date": "Введите дату рождения ДД.ММ.ГГГГ:",
-            "phone": "Введите телефон:", "email": "Введите Email:",
+            "full_name": "Введите ФИО:",
+            "birth_date": "Введите дату рождения ДД.ММ.ГГГГ:",
+            "phone": "Введите телефон:",
+            "email": "Введите Email:",
             "personal_email": "Введите Email_P:",
             "english_level": "Укажите уровень владения английским:",
             "employment_date": "Введите дату трудоустройства ДД.ММ.ГГГГ:",
@@ -169,8 +295,13 @@ def create_profile_router(service: VacationService) -> Router:
             "project_start_date": "Введите дату старта на проекте ДД.ММ.ГГГГ:",
         }
         await state.set_state(ProfileForm.waiting_value)
-        await state.set_data({"target_id": target_id, "profile_field": field,
-                              "owner_edit": prefix == "ownerfield"})
+        await state.set_data(
+            {
+                "target_id": target_id,
+                "profile_field": field,
+                "owner_edit": prefix == "ownerfield",
+            }
+        )
         await query.message.answer(prompts[field])
         await query.answer()
 
@@ -204,10 +335,12 @@ def create_profile_router(service: VacationService) -> Router:
             await query.answer("Недостаточно прав.", show_alert=True)
             return
         service.database.update_profile(target_id, **{field: value})
-        await query.message.edit_text("Данные сотрудника обновлены.")
+        await query.message.edit_text(
+            "✅ <b>Данные сотрудника обновлены</b>", parse_mode="HTML"
+        )
         await query.answer()
 
-    @router.message(ProfileForm.waiting_value)
+    @router.message(ProfileForm.waiting_value, F.text & ~F.text.startswith("/"))
     async def save_field(message: Message, state: FSMContext) -> None:
         if message.from_user is None:
             return
@@ -236,13 +369,15 @@ def create_profile_router(service: VacationService) -> Router:
                 kwargs[field] = parsed
             elif field == "phone" and not re.fullmatch(r"\+?[0-9 ()-]{7,20}", value):
                 raise ValueError
-            elif field in {"email", "personal_email"} and not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", value):
+            elif field in {"email", "personal_email"} and not re.fullmatch(
+                r"[^@\s]+@[^@\s]+\.[^@\s]+", value
+            ):
                 raise ValueError
             service.database.update_profile(target_id, **kwargs)
         except ValueError:
             await message.answer("Некорректное значение. Попробуйте еще раз.")
             return
         await state.clear()
-        await message.answer("Данные сотрудника обновлены.")
+        await message.answer("✅ <b>Данные сотрудника обновлены</b>", parse_mode="HTML")
 
     return router

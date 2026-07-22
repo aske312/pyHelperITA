@@ -1,3 +1,4 @@
+import asyncio
 import sqlite3
 from datetime import date, datetime, time
 from xml.etree import ElementTree
@@ -9,6 +10,7 @@ from bot.access import can_manage, visible_contacts
 from bot.config import Settings
 from bot.db import Database, format_display_name, validate_full_name
 from bot.export import export_vacations_xlsx
+from bot.reminders import SystemNotificationSender
 from bot.service import VacationService
 
 
@@ -247,6 +249,7 @@ def test_new_roles_are_supported(service):
     with pytest.raises(ValueError):
         service.database.update_employee(team_lead.id, role="admin")
 
+
 def test_legacy_admin_and_manager_roles_are_migrated(tmp_path):
     path = tmp_path / "legacy.sqlite3"
     with sqlite3.connect(path) as connection:
@@ -280,6 +283,7 @@ def test_legacy_admin_and_manager_roles_are_migrated(tmp_path):
     migrated_lead = database.find_employee("Старый Руководитель")
     assert migrated_lead is not None and migrated_lead.is_team_lead
 
+
 def test_employee_vacation_can_be_deleted(service):
     employee = service.register_employee("Удаляев Андрей", 741)
     vacation = service.add_vacation(employee.id, date(2027, 4, 1), date(2027, 4, 5))
@@ -289,6 +293,7 @@ def test_employee_vacation_can_be_deleted(service):
     assert service.database.list_vacations(employee_id=employee.id) == []
     with pytest.raises(LookupError):
         service.database.get_vacation(vacation.id)
+
 
 def test_intermediate_owner_schema_renames_team_lead_column(tmp_path):
     path = tmp_path / "intermediate.sqlite3"
@@ -317,6 +322,7 @@ def test_intermediate_owner_schema_renames_team_lead_column(tmp_path):
 
     assert employee.role == "owner"
     assert employee.team_lead_id is None
+
 
 def test_role_access_matrix_and_guest_contacts(service):
     owner = service.register_employee("Владелец Матрицы", 1001)
@@ -352,9 +358,9 @@ def test_notification_role_groups(service):
         datetime(2028, 1, 1, 10, 0), "Для сотрудников", owner.id, ("employee",)
     )
 
-    assert service.database.list_notification_recipients(notification.recipient_roles) == [
-        employee.telegram_user_id
-    ]
+    assert service.database.list_notification_recipients(
+        notification.recipient_roles
+    ) == [employee.telegram_user_id]
 
     changed = service.database.update_notification_roles(
         notification.id, ("team_lead", "guest")
@@ -364,6 +370,7 @@ def test_notification_role_groups(service):
     assert service.database.list_notification_recipients(changed.recipient_roles) == [
         guest.telegram_user_id
     ]
+
 
 def test_name_normalization_deduplication_and_display(service):
     employee = service.register_employee("  иВАНОВ   иВАН иВАНОВИЧ ")
@@ -410,9 +417,11 @@ def test_team_lead_notification_group_is_property_based(service):
     assert service.database.list_notification_recipients(("team_lead",)) == [
         lead.telegram_user_id
     ]
-    assert employee.telegram_user_id not in service.database.list_notification_recipients(
-        ("team_lead",)
+    assert (
+        employee.telegram_user_id
+        not in service.database.list_notification_recipients(("team_lead",))
     )
+
 
 def test_team_lifecycle_syncs_team_lead_assignment(service):
     lead = service.register_employee("Командов Алексей", 4101)
@@ -445,7 +454,9 @@ def test_employee_can_only_belong_to_one_team(service):
     service.database.add_team_member(second.id, member.id)
 
     assert service.database.list_team_members(first.id) == []
-    assert [item.id for item in service.database.list_team_members(second.id)] == [member.id]
+    assert [item.id for item in service.database.list_team_members(second.id)] == [
+        member.id
+    ]
     assert service.database.get_employee(member.id).team_lead_id == second_lead.id
 
 
@@ -464,5 +475,166 @@ def test_command_menus_hide_owner_commands(service):
 
     assert {"broadcast", "export", "guest"}.isdisjoint(employee_commands)
     assert {"broadcast", "export", "guest"}.isdisjoint(lead_commands)
-    assert {"team", "team_create", "team_add", "team_remove"} <= lead_commands
-    assert {"broadcast", "export", "guest"} <= owner_commands
+    assert {"employees", "invite_team", "dismiss_team"} <= lead_commands
+    assert {"team", "team_create", "delete_team"}.isdisjoint(lead_commands)
+    assert {
+        "staff",
+        "notifications",
+        "export",
+        "guest",
+        "team_create",
+        "delete_team",
+    } <= owner_commands
+    assert {"broadcast", "reminder", "employees"}.isdisjoint(owner_commands)
+
+
+def test_delete_team_clears_member_assignments(service):
+    lead = service.register_employee("Удаляев Руководитель", 5101)
+    member = service.register_employee("Освобожденов Сотрудник", 5102)
+    lead = service.database.update_employee(lead.id, is_team_lead=True)
+    team = service.database.create_team("Временная команда", lead.id)
+    service.database.add_team_member(team.id, member.id)
+
+    service.database.delete_team(team.id)
+
+    assert service.database.list_teams() == []
+    assert service.database.get_employee(member.id).team_lead_id is None
+    assert service.database.get_employee(lead.id).is_team_lead is True
+
+
+def test_repeating_team_notification_lifecycle(service):
+    lead = service.register_employee("Оповещаев Руководитель", 6101)
+    member = service.register_employee("Получаев Сотрудник", 6102)
+    lead = service.database.update_employee(lead.id, is_team_lead=True)
+    team = service.database.create_team("Команда оповещений", lead.id)
+    service.database.add_team_member(team.id, member.id)
+
+    notification = service.database.add_scheduled_notification(
+        datetime(2028, 2, 1, 10, 0),
+        "Командное оповещение",
+        lead.id,
+        (),
+        target_team_id=team.id,
+        repeat_interval_minutes=60,
+        repeat_count=3,
+    )
+
+    assert service.database.list_notification_recipients((), team.id) == [
+        lead.telegram_user_id,
+        member.telegram_user_id,
+    ]
+
+    service.database.finish_scheduled_notification(notification.id, 2, 0)
+    repeated = service.database.get_scheduled_notification(notification.id)
+
+    assert repeated.status == "pending"
+    assert repeated.scheduled_at == datetime(2028, 2, 1, 11, 0)
+    assert repeated.repeats_remaining == 2
+    assert repeated.delivered_count == 2
+
+    service.database.update_notification_schedule(notification.id, 1440, 5)
+    changed = service.database.get_scheduled_notification(notification.id)
+
+    assert changed.repeat_interval_minutes == 1440
+    assert changed.repeats_remaining == 5
+
+
+def test_delete_employee_removes_regular_employee(service):
+    employee = service.register_employee("Удаляемов Сотрудник", 6201)
+
+    service.database.delete_employee(employee.id)
+
+    with pytest.raises(LookupError):
+        service.database.get_employee(employee.id)
+
+
+def test_notification_supports_selected_employees(service):
+    owner = service.register_employee("Точечный Владелец", 7101)
+    first = service.register_employee("Первый Получатель", 7102)
+    second = service.register_employee("Второй Получатель", 7103)
+    owner = service.database.update_employee(owner.id, role="owner")
+
+    notification = service.database.add_scheduled_notification(
+        datetime(2028, 3, 1, 9, 0),
+        "Точечное сообщение",
+        owner.id,
+        (),
+        recipient_employee_ids=(first.id, second.id),
+    )
+
+    assert notification.recipient_employee_ids == (first.id, second.id)
+    assert service.database.list_notification_recipients(
+        (), recipient_employee_ids=notification.recipient_employee_ids
+    ) == [first.telegram_user_id, second.telegram_user_id]
+
+
+class RecordingBot:
+    def __init__(self):
+        self.messages = []
+        self.command_menus = []
+
+    async def send_message(self, chat_id, text):
+        self.messages.append((chat_id, text))
+
+    async def set_my_commands(self, commands, scope=None):
+        self.command_menus.append((commands, scope))
+
+
+def test_start_command_menu_helper_exists(service):
+    from bot.bot import set_employee_command_menu
+
+    employee = service.register_employee("Стартов Проверочный", 8101)
+    bot = RecordingBot()
+
+    asyncio.run(set_employee_command_menu(bot, employee))
+
+    assert len(bot.command_menus) == 1
+
+
+def test_mandatory_team_lead_notifications(service):
+    lead = service.register_employee("Лид Тестовый", 8201)
+    member = service.register_employee("Сотрудник Тестовый", 8202)
+    service.database.update_employee(lead.id, is_team_lead=True)
+    service.database.update_employee(
+        member.id, team_lead_id=lead.id, set_team_lead=True
+    )
+    service.database.update_profile(
+        member.id,
+        birth_date=date(1995, 7, 23),
+        employment_date=date(2026, 4, 23),
+    )
+    service.add_vacation(member.id, date(2026, 8, 10), date(2026, 8, 20))
+    bot = RecordingBot()
+    sender = SystemNotificationSender(service.database, service.settings, bot)
+
+    sent = asyncio.run(sender.send_due(datetime(2026, 7, 23, 9, 30)))
+    repeated = asyncio.run(sender.send_due(datetime(2026, 7, 23, 9, 31)))
+
+    assert sent == 3
+    assert repeated == 0
+    assert len(bot.messages) == 3
+    assert all(chat_id == lead.telegram_user_id for chat_id, _ in bot.messages)
+    assert any("день рождения" in text for _, text in bot.messages)
+    assert any("испытательный срок" in text for _, text in bot.messages)
+    assert any("добавил отпуск" in text for _, text in bot.messages)
+
+
+def test_birthday_and_probation_wait_until_0930(service):
+    lead = service.register_employee("Утренний Руководитель", 8301)
+    member = service.register_employee("Утренний Сотрудник", 8302)
+    service.database.update_employee(lead.id, is_team_lead=True)
+    service.database.update_employee(
+        member.id, team_lead_id=lead.id, set_team_lead=True
+    )
+    service.database.update_profile(
+        member.id,
+        birth_date=date(1990, 7, 23),
+        employment_date=date(2026, 4, 23),
+    )
+    bot = RecordingBot()
+    sender = SystemNotificationSender(service.database, service.settings, bot)
+
+    sent = asyncio.run(sender.send_due(datetime(2026, 7, 23, 9, 29)))
+
+    assert sent == 0
+    assert bot.messages == []

@@ -44,16 +44,27 @@ def create_onboarding_router(service: VacationService, settings: Settings) -> Ro
             await send("Введите локацию пребывания:")
         elif profile.grade is None:
             await state.clear()
-            await send("Выберите грейд:", reply_markup=_buttons([
-                (value, f"onboarding_grade:{value}")
-                for value in ("Intern", "Junior", "Middle", "Senior", "RM1")
-            ]))
+            await send(
+                "Выберите грейд:",
+                reply_markup=_buttons(
+                    [
+                        (value, f"onboarding_grade:{value}")
+                        for value in ("Intern", "Junior", "Middle", "Senior", "RM1")
+                    ]
+                ),
+            )
         elif profile.direction is None:
             await state.clear()
-            await send("Выберите направление:", reply_markup=_buttons([
-                (value, f"onboarding_direction:{value}")
-                for value in ("SA", "QA", "DEV", "HR")
-            ], 4))
+            await send(
+                "Выберите направление:",
+                reply_markup=_buttons(
+                    [
+                        (value, f"onboarding_direction:{value}")
+                        for value in ("SA", "QA", "DEV", "HR")
+                    ],
+                    4,
+                ),
+            )
         elif not profile.email:
             await state.set_state(Onboarding.waiting_for_email)
             await send("Введите рабочий Email:")
@@ -66,9 +77,12 @@ def create_onboarding_router(service: VacationService, settings: Settings) -> Ro
         user = message.from_user
         if user is None:
             return
+        await state.clear()
         profile = service.database.upsert_telegram_user(
-            telegram_user_id=user.id, username=user.username,
-            first_name=user.first_name, last_name=user.last_name,
+            telegram_user_id=user.id,
+            username=user.username,
+            first_name=user.first_name,
+            last_name=user.last_name,
             is_owner=user.id == settings.owner_telegram_id,
         )
         from bot.bot import set_employee_command_menu
@@ -76,7 +90,7 @@ def create_onboarding_router(service: VacationService, settings: Settings) -> Ro
         await set_employee_command_menu(message.bot, profile)
         await continue_onboarding(profile, message.answer, state)
 
-    @router.message(Onboarding.waiting_for_full_name)
+    @router.message(Onboarding.waiting_for_full_name, F.text & ~F.text.startswith("/"))
     async def save_full_name(message: Message, state: FSMContext) -> None:
         if message.from_user is None:
             return
@@ -92,7 +106,7 @@ def create_onboarding_router(service: VacationService, settings: Settings) -> Ro
             return
         await continue_onboarding(profile, message.answer, state)
 
-    @router.message(Onboarding.waiting_for_phone)
+    @router.message(Onboarding.waiting_for_phone, F.text & ~F.text.startswith("/"))
     async def save_phone(message: Message, state: FSMContext) -> None:
         value = (message.text or "").strip()
         if message.from_user is None or not re.fullmatch(r"\+?[0-9 ()-]{7,20}", value):
@@ -102,10 +116,12 @@ def create_onboarding_router(service: VacationService, settings: Settings) -> Ro
         if profile is None:
             return
         await continue_onboarding(
-            service.database.update_profile(profile.id, phone=value), message.answer, state
+            service.database.update_profile(profile.id, phone=value),
+            message.answer,
+            state,
         )
 
-    @router.message(Onboarding.waiting_for_location)
+    @router.message(Onboarding.waiting_for_location, F.text & ~F.text.startswith("/"))
     async def save_location(message: Message, state: FSMContext) -> None:
         value = (message.text or "").strip()
         if message.from_user is None or not value:
@@ -115,7 +131,9 @@ def create_onboarding_router(service: VacationService, settings: Settings) -> Ro
         if profile is None:
             return
         await continue_onboarding(
-            service.database.update_profile(profile.id, location=value), message.answer, state
+            service.database.update_profile(profile.id, location=value),
+            message.answer,
+            state,
         )
 
     @router.callback_query(F.data.startswith("onboarding_grade:"))
@@ -140,17 +158,21 @@ def create_onboarding_router(service: VacationService, settings: Settings) -> Ro
         await query.answer()
         await continue_onboarding(profile, query.message.edit_text, state)
 
-    @router.message(Onboarding.waiting_for_email)
+    @router.message(Onboarding.waiting_for_email, F.text & ~F.text.startswith("/"))
     async def save_email(message: Message, state: FSMContext) -> None:
         value = (message.text or "").strip().lower()
-        if message.from_user is None or not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", value):
+        if message.from_user is None or not re.fullmatch(
+            r"[^@\s]+@[^@\s]+\.[^@\s]+", value
+        ):
             await message.answer("Некорректный Email.")
             return
         profile = service.database.get_employee_by_telegram(message.from_user.id)
         if profile is None:
             return
         await continue_onboarding(
-            service.database.update_profile(profile.id, email=value), message.answer, state
+            service.database.update_profile(profile.id, email=value),
+            message.answer,
+            state,
         )
 
     return router

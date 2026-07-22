@@ -1,14 +1,36 @@
 from __future__ import annotations
 
+from datetime import datetime
 from html import escape
 
-from aiogram import Router
+from aiogram import F, Router
 from aiogram.filters import Command
-from aiogram.types import Message
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.types import CallbackQuery, Message
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 
+from bot.config import Settings
 from bot.db import format_display_name
 from bot.models import Employee, Team
 from bot.service import VacationService
+
+
+class TeamForm(StatesGroup):
+    waiting_name = State()
+
+
+class TeamNotificationForm(StatesGroup):
+    waiting_datetime = State()
+    waiting_text = State()
+
+
+def _buttons(items: list[tuple[str, str]], width: int = 1):
+    builder = InlineKeyboardBuilder()
+    for text, data in items:
+        builder.button(text=text, callback_data=data)
+    builder.adjust(width)
+    return builder.as_markup()
 
 
 def _team_card(team: Team, members: list[Employee]) -> str:
@@ -17,115 +39,456 @@ def _team_card(team: Team, members: list[Employee]) -> str:
         f" — {escape(member.grade or 'грейд не указан')}"
         for index, member in enumerate(members, 1)
     ]
-    composition = "\n".join(member_lines) if member_lines else "Состав пока пуст."
+    composition = (
+        "\n".join(member_lines) if member_lines else "<i>Состав пока пуст.</i>"
+    )
     return (
-        f"<b>Команда: {escape(team.name)}</b>\n"
-        f"Тимлид: {escape(format_display_name(team.lead_name))}\n"
-        f"Участников: {len(members)}\n\n"
-        f"<b>Состав</b>\n{composition}"
+        f"👥 <b>{escape(team.name)}</b>\n"
+        f"⭐ <b>Руководитель:</b> {escape(format_display_name(team.lead_name))}\n"
+        f"👤 <b>Участников:</b> <code>{len(members)}</code>\n\n"
+        f"<b>Состав команды</b>\n{composition}"
     )
 
 
-def create_team_router(service: VacationService) -> Router:
+def create_team_router(service: VacationService, settings: Settings) -> Router:
     router = Router(name="team")
 
-    def actor(message: Message) -> Employee | None:
-        if message.from_user is None:
-            return None
-        return service.database.get_employee_by_telegram(message.from_user.id)
+    def get_actor(telegram_id: int) -> Employee | None:
+        return service.database.get_employee_by_telegram(telegram_id)
 
-    def can_edit(employee: Employee, team: Team) -> bool:
-        return employee.role == "owner" or team.lead_id == employee.id
+    def available_teams(actor: Employee) -> list[Team]:
+        return service.database.list_teams(None if actor.role == "owner" else actor.id)
 
-    @router.message(Command("team"))
-    async def show_teams(message: Message) -> None:
-        employee = actor(message)
-        if employee is None or (employee.role != "owner" and not employee.is_team_lead):
-            await message.answer("Команда доступна владельцу и тимлидам.")
-            return
-        teams = service.database.list_teams(
-            None if employee.role == "owner" else employee.id
-        )
+    def employee_label(employee: Employee) -> str:
+        marks = []
+        if employee.role == "owner":
+            marks.append("владелец")
+        if employee.is_team_lead:
+            marks.append("⭐ руководитель")
+        suffix = f" · {', '.join(marks)}" if marks else ""
+        return f"{format_display_name(employee.full_name)}{suffix}"
+
+    async def show_employees_panel(message: Message, actor: Employee) -> None:
+        teams = available_teams(actor)
         if not teams:
+            text = (
+                "👥 <b>Команды пока не созданы</b>"
+                if actor.role == "owner"
+                else "👥 <b>За вами пока не закреплена команда</b>"
+            )
+            await message.answer(text, parse_mode="HTML")
+            return
+        for team in teams:
+            members = service.database.list_team_members(team.id)
+            actions = [
+                ("👤 Действия с сотрудником", f"team_members:{team.id}"),
+                ("➕ Пригласить", f"invite_team:{team.id}"),
+                ("➖ Исключить", f"dismiss_team:{team.id}"),
+                ("🔔 Оповестить команду", f"team_notification:{team.id}"),
+            ]
+            if actor.role == "owner":
+                actions.append(("🗑 Удалить команду", f"delete_team:{team.id}"))
             await message.answer(
-                "<b>Команды не созданы</b>\n\n"
-                "Создание: <code>/team_create Название команды</code>",
+                _team_card(team, members),
                 parse_mode="HTML",
+                reply_markup=_buttons(actions),
+            )
+
+    @router.message(Command("employees"))
+    async def employees(message: Message) -> None:
+        if message.from_user is None:
+            return
+        actor = get_actor(message.from_user.id)
+        if actor is None or not actor.is_team_lead:
+            await message.answer(
+                "⛔ Управление командой доступно только её руководителю."
             )
             return
-        cards = [
-            _team_card(team, service.database.list_team_members(team.id))
-            for team in teams
-        ]
-        await message.answer("\n\n──────────\n\n".join(cards), parse_mode="HTML")
+        await show_employees_panel(message, actor)
+
+    @router.callback_query(F.data.startswith("team_members:"))
+    async def team_members(query: CallbackQuery) -> None:
+        actor = get_actor(query.from_user.id)
+        team = service.database.get_team(int((query.data or "").split(":")[1]))
+        if actor is None or (actor.role != "owner" and team.lead_id != actor.id):
+            await query.answer("Недостаточно прав.", show_alert=True)
+            return
+        members = service.database.list_team_members(team.id)
+        if not members:
+            await query.answer("В команде пока нет сотрудников.", show_alert=True)
+            return
+        await query.message.edit_text(
+            f"👥 <b>{escape(team.name)}</b>\n\n"
+            "Выберите сотрудника, чтобы открыть доступные действия:",
+            parse_mode="HTML",
+            reply_markup=_buttons(
+                [(employee_label(item), f"employee:{item.id}") for item in members]
+            ),
+        )
+        await query.answer()
+
+    @router.callback_query(F.data.startswith("team_notification:"))
+    async def team_notification_start(query: CallbackQuery, state: FSMContext) -> None:
+        current = get_actor(query.from_user.id)
+        team = service.database.get_team(int((query.data or "").split(":")[1]))
+        if current is None or team.lead_id != current.id:
+            await query.answer("Недостаточно прав.", show_alert=True)
+            return
+        await state.set_state(TeamNotificationForm.waiting_datetime)
+        await state.set_data({"team_notification_id": team.id})
+        await query.message.edit_text(
+            f"🔔 <b>Оповещение команды {escape(team.name)}</b>\n\n"
+            "Введите дату и время отправки: <code>ДД.ММ.ГГГГ ЧЧ:ММ</code>",
+            parse_mode="HTML",
+        )
+        await query.answer()
+
+    @router.message(
+        TeamNotificationForm.waiting_datetime, F.text & ~F.text.startswith("/")
+    )
+    async def team_notification_datetime(message: Message, state: FSMContext) -> None:
+        try:
+            value = datetime.strptime((message.text or "").strip(), "%d.%m.%Y %H:%M")
+            if value <= datetime.now():
+                raise ValueError
+        except ValueError:
+            await message.answer("Введите будущую дату в формате ДД.ММ.ГГГГ ЧЧ:ММ.")
+            return
+        await state.update_data(
+            team_notification_at=value.isoformat(timespec="minutes")
+        )
+        await state.set_state(TeamNotificationForm.waiting_text)
+        await message.answer("Введите текст оповещения для всей команды:")
+
+    @router.message(TeamNotificationForm.waiting_text, F.text & ~F.text.startswith("/"))
+    async def team_notification_text(message: Message, state: FSMContext) -> None:
+        if message.from_user is None:
+            return
+        current = get_actor(message.from_user.id)
+        data = await state.get_data()
+        team = service.database.get_team(int(data["team_notification_id"]))
+        text = (message.text or "").strip()
+        if current is None or team.lead_id != current.id:
+            await state.clear()
+            return
+        if not text:
+            await message.answer("Текст не может быть пустым.")
+            return
+        notification = service.database.add_scheduled_notification(
+            datetime.fromisoformat(str(data["team_notification_at"])),
+            text,
+            current.id,
+            (),
+            target_team_id=team.id,
+        )
+        await state.clear()
+        await message.answer(
+            f"✅ Оповещение #{notification.id} для команды "
+            f"<b>{escape(team.name)}</b> запланировано.",
+            parse_mode="HTML",
+        )
 
     @router.message(Command("team_create"))
-    async def create_team(message: Message) -> None:
-        employee = actor(message)
-        if employee is None or (employee.role != "owner" and not employee.is_team_lead):
-            await message.answer("Создавать команды могут владелец и тимлиды.")
+    async def create_team_start(message: Message) -> None:
+        if message.from_user is None:
             return
-        arguments = (message.text or "").partition(" ")[2].strip()
-        lead_id = employee.id
-        name = arguments
-        if employee.role == "owner" and arguments:
-            first, separator, rest = arguments.partition(" ")
-            if first.isdigit() and separator:
-                lead_id, name = int(first), rest.strip()
-        if not name:
-            example = "/team_create ID_тимлида Название" if employee.role == "owner" else "/team_create Название"
-            await message.answer(f"Формат: <code>{example}</code>", parse_mode="HTML")
+        actor = get_actor(message.from_user.id)
+        if actor is None or actor.role != "owner":
+            await message.answer("⛔ Создавать команды может только владелец продукта.")
             return
-        try:
-            team = service.database.create_team(name, lead_id)
-        except (ValueError, LookupError) as error:
-            await message.answer(f"Не удалось создать команду: {escape(str(error))}", parse_mode="HTML")
+        leaders = [
+            item
+            for item in service.database.list_employees()
+            if item.is_team_lead and item.role != "guest"
+        ]
+        if not leaders:
+            await message.answer(
+                "Сначала назначьте сотруднику свойство руководителя через /employees."
+            )
             return
         await message.answer(
-            f"<b>Команда создана</b>\n\nНазвание: {escape(team.name)}\nID: <code>{team.id}</code>",
+            "⭐ <b>Новая команда</b>\n\nВыберите руководителя:",
+            parse_mode="HTML",
+            reply_markup=_buttons(
+                [
+                    (employee_label(item), f"create_team_lead:{item.id}")
+                    for item in leaders
+                ]
+            ),
+        )
+
+    @router.callback_query(F.data.startswith("create_team_lead:"))
+    async def create_team_lead(query: CallbackQuery, state: FSMContext) -> None:
+        actor = get_actor(query.from_user.id)
+        if actor is None or actor.role != "owner":
+            await query.answer("Недостаточно прав.", show_alert=True)
+            return
+        lead_id = int((query.data or "").split(":")[1])
+        lead = service.database.get_employee(lead_id)
+        if not lead.is_team_lead:
+            await query.answer(
+                "Сотрудник больше не является руководителем.", show_alert=True
+            )
+            return
+        await state.set_state(TeamForm.waiting_name)
+        await state.set_data({"team_lead_id": lead_id})
+        await query.message.edit_text(
+            f"⭐ Руководитель: <b>{escape(format_display_name(lead.full_name))}</b>\n\n"
+            "Введите название новой команды:",
+            parse_mode="HTML",
+        )
+        await query.answer()
+
+    @router.message(TeamForm.waiting_name, F.text & ~F.text.startswith("/"))
+    async def create_team_finish(message: Message, state: FSMContext) -> None:
+        if message.from_user is None:
+            return
+        actor = get_actor(message.from_user.id)
+        if actor is None or actor.role != "owner":
+            await state.clear()
+            return
+        name = (message.text or "").strip()
+        data = await state.get_data()
+        try:
+            team = service.database.create_team(name, int(data["team_lead_id"]))
+        except (ValueError, LookupError) as error:
+            await message.answer(f"Не удалось создать команду: {escape(str(error))}")
+            return
+        await state.clear()
+        await message.answer(
+            f"✅ <b>Команда создана</b>\n\n{_team_card(team, [])}",
             parse_mode="HTML",
         )
 
-    @router.message(Command("team_add"))
-    async def add_member(message: Message) -> None:
-        employee = actor(message)
-        parts = (message.text or "").split()
-        if employee is None or len(parts) != 3:
-            await message.answer("Формат: <code>/team_add ID_команды ID_сотрудника</code>", parse_mode="HTML")
+    async def start_invite(message: Message, actor: Employee) -> None:
+        teams = available_teams(actor)
+        if not teams:
+            await message.answer("Доступных команд нет.")
             return
-        try:
-            team = service.database.get_team(int(parts[1]))
-            if not can_edit(employee, team):
-                await message.answer("Недостаточно прав для этой команды.")
-                return
-            member = service.database.add_team_member(team.id, int(parts[2]))
-        except (ValueError, LookupError) as error:
-            await message.answer(f"Не удалось добавить участника: {escape(str(error))}", parse_mode="HTML")
+        if len(teams) == 1:
+            await show_invite_candidates(message, actor, teams[0])
             return
         await message.answer(
-            f"<b>Участник добавлен</b>\n\n"
-            f"Команда: {escape(team.name)}\n"
-            f"Сотрудник: {escape(format_display_name(member.full_name))}",
-            parse_mode="HTML",
+            "Выберите команду:",
+            reply_markup=_buttons(
+                [(team.name, f"invite_team:{team.id}") for team in teams]
+            ),
         )
 
-    @router.message(Command("team_remove"))
-    async def remove_member(message: Message) -> None:
-        employee = actor(message)
-        parts = (message.text or "").split()
-        if employee is None or len(parts) != 3:
-            await message.answer("Формат: <code>/team_remove ID_команды ID_сотрудника</code>", parse_mode="HTML")
+    async def show_invite_candidates(
+        message: Message, actor: Employee, team: Team
+    ) -> None:
+        current_ids = {item.id for item in service.database.list_team_members(team.id)}
+        candidates = [
+            item
+            for item in service.database.list_employees()
+            if item.id not in current_ids
+            and item.id != team.lead_id
+            and item.role != "owner"
+            and item.role != "guest"
+        ]
+        if not candidates:
+            await message.answer("Нет сотрудников, которых можно добавить.")
             return
+        await message.answer(
+            f"➕ <b>Добавление в {escape(team.name)}</b>\n\nВыберите сотрудника:",
+            parse_mode="HTML",
+            reply_markup=_buttons(
+                [
+                    (employee_label(item), f"invite_member:{team.id}:{item.id}")
+                    for item in candidates
+                ]
+            ),
+        )
+
+    @router.message(Command("invite_team"))
+    async def invite_command(message: Message) -> None:
+        if message.from_user is None:
+            return
+        actor = get_actor(message.from_user.id)
+        if actor is None or (actor.role != "owner" and not actor.is_team_lead):
+            await message.answer("Недостаточно прав.")
+            return
+        await start_invite(message, actor)
+
+    @router.callback_query(F.data.startswith("invite_team:"))
+    async def invite_team(query: CallbackQuery) -> None:
+        actor = get_actor(query.from_user.id)
+        team = service.database.get_team(int((query.data or "").split(":")[1]))
+        if actor is None or (actor.role != "owner" and team.lead_id != actor.id):
+            await query.answer("Недостаточно прав.", show_alert=True)
+            return
+        await show_invite_candidates(query.message, actor, team)
+        await query.answer()
+
+    @router.callback_query(F.data.startswith("invite_member:"))
+    async def invite_member(query: CallbackQuery) -> None:
+        actor = get_actor(query.from_user.id)
+        _, raw_team, raw_employee = (query.data or "").split(":")
+        team = service.database.get_team(int(raw_team))
+        employee = service.database.get_employee(int(raw_employee))
+        if actor is None or (actor.role != "owner" and team.lead_id != actor.id):
+            await query.answer("Недостаточно прав.", show_alert=True)
+            return
+        previous_lead_id = employee.team_lead_id
         try:
-            team = service.database.get_team(int(parts[1]))
-            if not can_edit(employee, team):
-                await message.answer("Недостаточно прав для этой команды.")
-                return
-            removed = service.database.remove_team_member(team.id, int(parts[2]))
+            employee = service.database.add_team_member(team.id, employee.id)
         except (ValueError, LookupError) as error:
-            await message.answer(f"Не удалось удалить участника: {escape(str(error))}", parse_mode="HTML")
+            await query.answer(str(error), show_alert=True)
             return
-        text = "Участник удален из команды." if removed else "Участник не найден в этой команде."
-        await message.answer(f"<b>{text}</b>", parse_mode="HTML")
+        await query.message.edit_text(
+            f"✅ <b>{escape(format_display_name(employee.full_name))}</b> "
+            f"добавлен в команду <b>{escape(team.name)}</b>.",
+            parse_mode="HTML",
+        )
+        if (
+            actor.role != "owner"
+            and previous_lead_id is not None
+            and previous_lead_id != actor.id
+            and settings.owner_telegram_id
+        ):
+            await query.bot.send_message(
+                settings.owner_telegram_id,
+                "⚠️ <b>Сотрудник переведён между командами</b>\n\n"
+                f"Руководитель: {escape(format_display_name(actor.full_name))}\n"
+                f"Сотрудник: {escape(format_display_name(employee.full_name))}\n"
+                f"Новая команда: {escape(team.name)}",
+                parse_mode="HTML",
+            )
+        await query.answer("Сотрудник добавлен")
+
+    async def start_dismiss(message: Message, actor: Employee) -> None:
+        teams = available_teams(actor)
+        if not teams:
+            await message.answer("Доступных команд нет.")
+            return
+        if len(teams) == 1:
+            await show_dismiss_candidates(message, teams[0])
+            return
+        await message.answer(
+            "Выберите команду:",
+            reply_markup=_buttons(
+                [(team.name, f"dismiss_team:{team.id}") for team in teams]
+            ),
+        )
+
+    async def show_dismiss_candidates(message: Message, team: Team) -> None:
+        members = service.database.list_team_members(team.id)
+        if not members:
+            await message.answer("В команде нет сотрудников.")
+            return
+        await message.answer(
+            f"➖ <b>Исключение из {escape(team.name)}</b>\n\nВыберите сотрудника:",
+            parse_mode="HTML",
+            reply_markup=_buttons(
+                [
+                    (employee_label(item), f"dismiss_member:{team.id}:{item.id}")
+                    for item in members
+                ]
+            ),
+        )
+
+    @router.message(Command("dismiss_team"))
+    async def dismiss_command(message: Message) -> None:
+        if message.from_user is None:
+            return
+        actor = get_actor(message.from_user.id)
+        if actor is None or (actor.role != "owner" and not actor.is_team_lead):
+            await message.answer("Недостаточно прав.")
+            return
+        await start_dismiss(message, actor)
+
+    @router.callback_query(F.data.startswith("dismiss_team:"))
+    async def dismiss_team(query: CallbackQuery) -> None:
+        actor = get_actor(query.from_user.id)
+        team = service.database.get_team(int((query.data or "").split(":")[1]))
+        if actor is None or (actor.role != "owner" and team.lead_id != actor.id):
+            await query.answer("Недостаточно прав.", show_alert=True)
+            return
+        await show_dismiss_candidates(query.message, team)
+        await query.answer()
+
+    @router.callback_query(F.data.startswith("dismiss_member:"))
+    async def dismiss_member(query: CallbackQuery) -> None:
+        actor = get_actor(query.from_user.id)
+        _, raw_team, raw_employee = (query.data or "").split(":")
+        team = service.database.get_team(int(raw_team))
+        if actor is None or (actor.role != "owner" and team.lead_id != actor.id):
+            await query.answer("Недостаточно прав.", show_alert=True)
+            return
+        employee = service.database.get_employee(int(raw_employee))
+        removed = service.database.remove_team_member(team.id, employee.id)
+        if not removed:
+            await query.answer(
+                "Сотрудник уже не состоит в этой команде.", show_alert=True
+            )
+            return
+        await query.message.edit_text(
+            f"✅ <b>{escape(format_display_name(employee.full_name))}</b> "
+            f"исключён из команды <b>{escape(team.name)}</b>.",
+            parse_mode="HTML",
+        )
+        await query.answer("Сотрудник исключён")
+
+    @router.message(Command("delete_team"))
+    async def delete_team_command(message: Message) -> None:
+        if message.from_user is None:
+            return
+        actor = get_actor(message.from_user.id)
+        if actor is None or actor.role != "owner":
+            await message.answer("⛔ Удалять команды может только владелец продукта.")
+            return
+        teams = service.database.list_teams()
+        if not teams:
+            await message.answer("Команд для удаления нет.")
+            return
+        await message.answer(
+            "🗑 <b>Удаление команды</b>\n\nВыберите команду:",
+            parse_mode="HTML",
+            reply_markup=_buttons(
+                [(team.name, f"delete_team:{team.id}") for team in teams]
+            ),
+        )
+
+    @router.callback_query(F.data.startswith("delete_team:"))
+    async def delete_team_request(query: CallbackQuery) -> None:
+        actor = get_actor(query.from_user.id)
+        team = service.database.get_team(int((query.data or "").split(":")[1]))
+        if actor is None or actor.role != "owner":
+            await query.answer("Недостаточно прав.", show_alert=True)
+            return
+        await query.message.edit_text(
+            f"🗑 Удалить команду <b>{escape(team.name)}</b>?\n\n"
+            "У сотрудников будет очищена привязка к команде.",
+            parse_mode="HTML",
+            reply_markup=_buttons(
+                [
+                    ("Удалить безвозвратно", f"confirm_delete_team:{team.id}"),
+                    ("Отмена", "team_cancel"),
+                ]
+            ),
+        )
+        await query.answer()
+
+    @router.callback_query(F.data.startswith("confirm_delete_team:"))
+    async def delete_team_confirm(query: CallbackQuery) -> None:
+        actor = get_actor(query.from_user.id)
+        if actor is None or actor.role != "owner":
+            await query.answer("Недостаточно прав.", show_alert=True)
+            return
+        team_id = int((query.data or "").split(":")[1])
+        team = service.database.get_team(team_id)
+        service.database.delete_team(team_id)
+        await query.message.edit_text(
+            f"✅ Команда <b>{escape(team.name)}</b> удалена. "
+            "Привязки сотрудников очищены.",
+            parse_mode="HTML",
+        )
+        await query.answer("Команда удалена")
+
+    @router.callback_query(F.data == "team_cancel")
+    async def team_cancel(query: CallbackQuery) -> None:
+        await query.message.edit_text("Удаление команды отменено.")
+        await query.answer()
 
     return router
