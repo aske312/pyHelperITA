@@ -10,6 +10,7 @@ __pycache__/
 data/*.sqlite3
 data/*.sqlite3-*
 backups/
+logs/
 exports/
 /.venv/
 /.idea/
@@ -17,3 +18,4 @@ exports/
 settings/.env
 dist/
 build/
+/.env.example

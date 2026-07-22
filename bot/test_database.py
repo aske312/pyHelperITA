@@ -1,11 +1,13 @@
+import sqlite3
 from datetime import date, datetime, time
 from xml.etree import ElementTree
 from zipfile import ZipFile
 
 import pytest
 
+from bot.access import can_manage, visible_contacts
 from bot.config import Settings
-from bot.db import Database, validate_full_name
+from bot.db import Database, format_display_name, validate_full_name
 from bot.export import export_vacations_xlsx
 from bot.service import VacationService
 
@@ -14,8 +16,8 @@ from bot.service import VacationService
 def service(tmp_path):
     settings = Settings(
         database_path=tmp_path / "test.sqlite3",
-        admin_telegram_id=None,
-        admin_full_name="",
+        owner_telegram_id=None,
+        owner_full_name="",
     )
     database = Database(settings.database_path)
     instance = VacationService(database, settings)
@@ -81,19 +83,19 @@ def test_due_reminder_is_returned_once(service):
 
 
 def test_roles_manager_and_xlsx_export(service, tmp_path):
-    manager = service.register_employee("Руководитель", 100)
-    service.database.update_employee(manager.id, role="manager")
-    employee = service.register_employee("Сотрудник", 200)
+    manager = service.register_employee("Руководитель Отдела", 100)
+    service.database.update_employee(manager.id, is_team_lead=True)
+    employee = service.register_employee("Сотрудник Отдела", 200)
     updated = service.database.update_employee(
-        employee.id, manager_id=manager.id, set_manager=True
+        employee.id, team_lead_id=manager.id, set_team_lead=True
     )
     service.add_vacation(updated.id, date(2026, 9, 1), date(2026, 9, 7))
 
     items = service.database.list_vacations(employee_id=updated.id)
     output = export_vacations_xlsx(items, tmp_path / "vacations.xlsx")
 
-    assert updated.manager_id == manager.id
-    assert items[0].manager_telegram_user_id == manager.telegram_user_id
+    assert updated.team_lead_id == manager.id
+    assert items[0].team_lead_telegram_user_id == manager.telegram_user_id
     with ZipFile(output) as workbook:
         assert "xl/worksheets/sheet1.xml" in workbook.namelist()
         ElementTree.fromstring(workbook.read("xl/worksheets/sheet1.xml"))
@@ -101,13 +103,13 @@ def test_roles_manager_and_xlsx_export(service, tmp_path):
 
 def test_telegram_onboarding_preserves_existing_user(service):
     created = service.database.upsert_telegram_user(
-        9001, "old_name", "Иван", "Иванов", is_admin=False
+        9001, "old_name", "Иван", "Иванов", is_owner=False
     )
     completed = service.database.complete_profile(created.id, "Иванов Иван Иванович")
     service.add_vacation(completed.id, date(2027, 1, 1), date(2027, 1, 5))
 
     returned = service.database.upsert_telegram_user(
-        9001, "new_name", "Иван", "Иванов", is_admin=False
+        9001, "new_name", "Иван", "Иванов", is_owner=False
     )
 
     assert returned.id == completed.id
@@ -120,7 +122,7 @@ def test_telegram_onboarding_preserves_existing_user(service):
 
 def test_profile_fields_and_broadcast_recipients(service):
     employee = service.database.upsert_telegram_user(
-        1234, "employee_tag", "Иван", "Иванов", is_admin=False
+        1234, "employee_tag", "Иван", "Иванов", is_owner=False
     )
     employee = service.database.complete_profile(employee.id, "Иванов Иван Иванович")
     updated = service.database.update_profile(
@@ -134,7 +136,7 @@ def test_profile_fields_and_broadcast_recipients(service):
     assert updated.birth_date == date(1990, 5, 17)
     assert updated.phone == "+7 999 123-45-67"
     assert updated.email == "user@example.com"
-    assert service.database.list_notification_recipients() == [1234]
+    assert service.database.list_notification_recipients(("employee",)) == [1234]
 
 
 def test_vacation_anomalies_are_detected(service):
@@ -151,7 +153,7 @@ def test_vacation_anomalies_are_detected(service):
 
 def test_scheduled_notification_lifecycle(service):
     admin = service.register_employee("Админов Андрей", 42)
-    service.database.update_employee(admin.id, role="admin")
+    service.database.update_employee(admin.id, role="owner")
     scheduled = service.database.add_scheduled_notification(
         datetime(2027, 8, 10, 9, 30), "Общее уведомление", admin.id
     )
@@ -175,7 +177,7 @@ def test_scheduled_notification_lifecycle(service):
 
 @pytest.mark.parametrize(
     "value",
-    ["Иванов Иван", "Иванов Иван Иванович", "Иванов И.И.", "Сидорова А.С."],
+    ["Иванов Иван", "Иванов Иван Иванович"],
 )
 def test_supported_name_formats(value):
     assert validate_full_name(value) == value
@@ -184,8 +186,8 @@ def test_supported_name_formats(value):
 def test_admin_is_created_from_settings(tmp_path):
     settings = Settings(
         database_path=tmp_path / "admin.sqlite3",
-        admin_telegram_id=42,
-        admin_full_name="Петров Пётр Петрович",
+        owner_telegram_id=42,
+        owner_full_name="Петров Пётр Петрович",
     )
     service = VacationService(Database(settings.database_path), settings)
 
@@ -193,7 +195,7 @@ def test_admin_is_created_from_settings(tmp_path):
     admin = service.database.get_employee_by_telegram(42)
 
     assert admin is not None
-    assert admin.role == "admin"
+    assert admin.role == "owner"
     assert admin.full_name == "Петров Пётр Петрович"
     assert admin.profile_completed is True
 
@@ -202,3 +204,265 @@ def test_admin_is_created_from_settings(tmp_path):
 def test_full_name_is_required(value):
     with pytest.raises(ValueError):
         validate_full_name(value)
+
+
+def test_profile_workplace_fields_and_vacation_update(service):
+    employee = service.register_employee("Новиков Николай", 321)
+    updated = service.database.update_profile(
+        employee.id,
+        location="Санкт-Петербург",
+        office_city="Москва",
+        work_format="hybrid",
+        grade="Middle",
+        direction="DEV",
+        project_name="Лаба",
+        project_start_date=date(2026, 10, 1),
+    )
+    vacation = service.add_vacation(employee.id, date(2027, 2, 1), date(2027, 2, 7))
+    changed = service.database.update_vacation(
+        vacation.id, date(2027, 2, 2), date(2027, 2, 10)
+    )
+
+    assert updated.location == "Санкт-Петербург"
+    assert updated.office_city == "Москва"
+    assert updated.work_format == "hybrid"
+    assert updated.grade == "Middle"
+    assert updated.direction == "DEV"
+    assert updated.project_name == "Лаба"
+    assert updated.project_start_date == date(2026, 10, 1)
+    assert changed.start_date == date(2027, 2, 2)
+    assert changed.end_date == date(2027, 2, 10)
+
+
+def test_new_roles_are_supported(service):
+    team_lead = service.register_employee("Лидер Команды", 654)
+    owner = service.register_employee("Владелец Компании", 987)
+
+    team_lead = service.database.update_employee(team_lead.id, is_team_lead=True)
+    owner = service.database.update_employee(owner.id, role="owner")
+
+    assert team_lead.role == "employee"
+    assert team_lead.is_team_lead
+    assert owner.role == "owner"
+    with pytest.raises(ValueError):
+        service.database.update_employee(team_lead.id, role="admin")
+
+def test_legacy_admin_and_manager_roles_are_migrated(tmp_path):
+    path = tmp_path / "legacy.sqlite3"
+    with sqlite3.connect(path) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE employees (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                full_name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+                telegram_user_id INTEGER UNIQUE,
+                telegram_username TEXT, telegram_first_name TEXT,
+                telegram_last_name TEXT, telegram_tag TEXT, birth_date TEXT,
+                phone TEXT, email TEXT,
+                profile_completed INTEGER NOT NULL DEFAULT 1,
+                role TEXT NOT NULL DEFAULT 'employee'
+                    CHECK (role IN ('employee', 'manager', 'admin')),
+                manager_id INTEGER, is_active INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL
+            );
+            INSERT INTO employees(full_name, role, created_at)
+            VALUES ('Старый Администратор', 'admin', '2026-01-01T00:00:00'),
+                   ('Старый Руководитель', 'manager', '2026-01-01T00:00:00');
+            """
+        )
+    database = Database(path)
+    database.initialize()
+
+    roles = {item.full_name: item.role for item in database.list_employees()}
+
+    assert roles["Старый Администратор"] == "owner"
+    assert roles["Старый Руководитель"] == "employee"
+    migrated_lead = database.find_employee("Старый Руководитель")
+    assert migrated_lead is not None and migrated_lead.is_team_lead
+
+def test_employee_vacation_can_be_deleted(service):
+    employee = service.register_employee("Удаляев Андрей", 741)
+    vacation = service.add_vacation(employee.id, date(2027, 4, 1), date(2027, 4, 5))
+
+    service.database.delete_vacation(vacation.id)
+
+    assert service.database.list_vacations(employee_id=employee.id) == []
+    with pytest.raises(LookupError):
+        service.database.get_vacation(vacation.id)
+
+def test_intermediate_owner_schema_renames_team_lead_column(tmp_path):
+    path = tmp_path / "intermediate.sqlite3"
+    with sqlite3.connect(path) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE employees (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                full_name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+                telegram_user_id INTEGER UNIQUE,
+                role TEXT NOT NULL DEFAULT 'employee'
+                    CHECK (role IN ('employee', 'team_lead', 'owner')),
+                manager_id INTEGER,
+                profile_completed INTEGER NOT NULL DEFAULT 1,
+                is_active INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL
+            );
+            INSERT INTO employees(full_name, role, created_at)
+            VALUES ('Владелец Старой Схемы', 'owner', '2026-01-01T00:00:00');
+            """
+        )
+    database = Database(path)
+    database.initialize()
+
+    employee = database.list_employees()[0]
+
+    assert employee.role == "owner"
+    assert employee.team_lead_id is None
+
+def test_role_access_matrix_and_guest_contacts(service):
+    owner = service.register_employee("Владелец Матрицы", 1001)
+    lead = service.register_employee("Тимлид Матрицы", 1002)
+    employee = service.register_employee("Сотрудник Матрицы", 1003)
+    outsider = service.register_employee("Чужой Сотрудник", 1004)
+    guest = service.register_employee("Гость Матрицы", 1005)
+    owner = service.database.update_employee(owner.id, role="owner")
+    lead = service.database.update_employee(lead.id, is_team_lead=True)
+    employee = service.database.update_employee(
+        employee.id, team_lead_id=lead.id, set_team_lead=True
+    )
+    guest = service.database.update_employee(
+        guest.id, role="guest", team_lead_id=lead.id, set_team_lead=True
+    )
+
+    assert can_manage(owner, outsider)
+    assert can_manage(lead, employee)
+    assert can_manage(lead, guest)
+    assert not can_manage(lead, outsider)
+    assert can_manage(employee, employee)
+    assert not can_manage(employee, guest)
+    assert visible_contacts(guest, service.database.list_employees()) == [lead]
+
+
+def test_notification_role_groups(service):
+    owner = service.register_employee("Владелец Рассылки", 2001)
+    employee = service.register_employee("Получатель Рассылки", 2002)
+    guest = service.register_employee("Гость Рассылки", 2003)
+    owner = service.database.update_employee(owner.id, role="owner")
+    service.database.update_employee(guest.id, role="guest")
+    notification = service.database.add_scheduled_notification(
+        datetime(2028, 1, 1, 10, 0), "Для сотрудников", owner.id, ("employee",)
+    )
+
+    assert service.database.list_notification_recipients(notification.recipient_roles) == [
+        employee.telegram_user_id
+    ]
+
+    changed = service.database.update_notification_roles(
+        notification.id, ("team_lead", "guest")
+    )
+
+    assert changed.recipient_roles == ("team_lead", "guest")
+    assert service.database.list_notification_recipients(changed.recipient_roles) == [
+        guest.telegram_user_id
+    ]
+
+def test_name_normalization_deduplication_and_display(service):
+    employee = service.register_employee("  иВАНОВ   иВАН иВАНОВИЧ ")
+
+    assert employee.full_name == "Иванов Иван Иванович"
+    assert format_display_name(employee.full_name) == "Иванов И.И."
+    assert service.database.find_employee("ИВАНОВ ИВАН ИВАНОВИЧ") == employee
+    with pytest.raises(ValueError, match="уже существует"):
+        service.register_employee("иванов иван иванович")
+
+
+def test_mentor_and_optional_profile_fields(service):
+    mentor = service.register_employee("Петров Петр Петрович")
+    employee = service.register_employee("Сидоров Семен Сергеевич")
+
+    employee = service.database.update_employee(
+        employee.id, mentor_id=mentor.id, set_mentor=True
+    )
+    employee = service.database.update_profile(
+        employee.id,
+        email="work@example.com",
+        personal_email="personal@example.com",
+        english_level="B2",
+        employment_date=date(2026, 7, 1),
+        work_format="remote",
+    )
+
+    assert employee.mentor_id == mentor.id
+    assert employee.personal_email == "personal@example.com"
+    assert employee.english_level == "B2"
+    assert employee.employment_date == date(2026, 7, 1)
+    assert employee.work_format == "remote"
+    with pytest.raises(ValueError, match="самому себе"):
+        service.database.update_employee(
+            employee.id, mentor_id=employee.id, set_mentor=True
+        )
+
+
+def test_team_lead_notification_group_is_property_based(service):
+    lead = service.register_employee("Лебедев Леонид", 3001)
+    employee = service.register_employee("Орлов Олег", 3002)
+    service.database.update_employee(lead.id, is_team_lead=True)
+
+    assert service.database.list_notification_recipients(("team_lead",)) == [
+        lead.telegram_user_id
+    ]
+    assert employee.telegram_user_id not in service.database.list_notification_recipients(
+        ("team_lead",)
+    )
+
+def test_team_lifecycle_syncs_team_lead_assignment(service):
+    lead = service.register_employee("Командов Алексей", 4101)
+    member = service.register_employee("Участников Борис", 4102)
+    lead = service.database.update_employee(lead.id, is_team_lead=True)
+
+    team = service.database.create_team("Платформа", lead.id)
+    added = service.database.add_team_member(team.id, member.id)
+
+    assert team.name == "Платформа"
+    assert team.lead_id == lead.id
+    assert added.team_lead_id == lead.id
+    assert service.database.list_team_members(team.id) == [added]
+
+    assert service.database.remove_team_member(team.id, member.id)
+    assert service.database.list_team_members(team.id) == []
+    assert service.database.get_employee(member.id).team_lead_id is None
+
+
+def test_employee_can_only_belong_to_one_team(service):
+    first_lead = service.register_employee("Первый Руководитель", 4201)
+    second_lead = service.register_employee("Второй Руководитель", 4202)
+    member = service.register_employee("Общий Сотрудник", 4203)
+    first_lead = service.database.update_employee(first_lead.id, is_team_lead=True)
+    second_lead = service.database.update_employee(second_lead.id, is_team_lead=True)
+    first = service.database.create_team("Первая команда", first_lead.id)
+    second = service.database.create_team("Вторая команда", second_lead.id)
+
+    service.database.add_team_member(first.id, member.id)
+    service.database.add_team_member(second.id, member.id)
+
+    assert service.database.list_team_members(first.id) == []
+    assert [item.id for item in service.database.list_team_members(second.id)] == [member.id]
+    assert service.database.get_employee(member.id).team_lead_id == second_lead.id
+
+
+def test_command_menus_hide_owner_commands(service):
+    from bot.bot import commands_for_employee
+
+    employee = service.register_employee("Меню Сотрудника", 4301)
+    lead = service.register_employee("Меню Тимлида", 4302)
+    owner = service.register_employee("Меню Владельца", 4303)
+    lead = service.database.update_employee(lead.id, is_team_lead=True)
+    owner = service.database.update_employee(owner.id, role="owner")
+
+    employee_commands = {item.command for item in commands_for_employee(employee)}
+    lead_commands = {item.command for item in commands_for_employee(lead)}
+    owner_commands = {item.command for item in commands_for_employee(owner)}
+
+    assert {"broadcast", "export", "guest"}.isdisjoint(employee_commands)
+    assert {"broadcast", "export", "guest"}.isdisjoint(lead_commands)
+    assert {"team", "team_create", "team_add", "team_remove"} <= lead_commands
+    assert {"broadcast", "export", "guest"} <= owner_commands

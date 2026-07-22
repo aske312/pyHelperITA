@@ -10,7 +10,9 @@ class Employee:
     full_name: str
     telegram_user_id: int | None
     role: str
-    manager_id: int | None
+    is_team_lead: bool
+    team_lead_id: int | None
+    mentor_id: int | None
     telegram_username: str | None
     telegram_first_name: str | None
     telegram_last_name: str | None
@@ -18,10 +20,28 @@ class Employee:
     birth_date: date | None
     phone: str | None
     email: str | None
+    personal_email: str | None
+    english_level: str | None
+    employment_date: date | None
+    location: str | None
+    office_city: str | None
+    work_format: str | None
+    grade: str | None
+    direction: str | None
+    project_name: str | None
+    project_start_date: date | None
     profile_completed: bool
     is_active: bool
     created_at: datetime
 
+
+@dataclass(frozen=True, slots=True)
+class Team:
+    id: int
+    name: str
+    lead_id: int
+    lead_name: str
+    created_at: datetime
 
 @dataclass(frozen=True, slots=True)
 class Vacation:
@@ -42,7 +62,7 @@ class VacationView:
     employee_id: int
     employee_name: str
     telegram_user_id: int | None
-    manager_telegram_user_id: int | None
+    team_lead_telegram_user_id: int | None
     start_date: date
     end_date: date
     created_at: datetime
@@ -64,6 +84,7 @@ class ScheduledNotification:
     message_text: str
     status: str
     created_by_employee_id: int
+    recipient_roles: tuple[str, ...]
     delivered_count: int
     failed_count: int
     created_at: datetime

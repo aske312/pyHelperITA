@@ -29,19 +29,19 @@ class ReminderSender:
             )
             if vacation.telegram_user_id is not None:
                 await self.bot.send_message(vacation.telegram_user_id, text)
-            if self.settings.admin_telegram_id is not None:
+            if self.settings.owner_telegram_id is not None:
                 await self.bot.send_message(
-                    self.settings.admin_telegram_id,
+                    self.settings.owner_telegram_id,
                     f"Через {reminder.days_before} дн. запланирован отпуск "
                     f"{vacation.employee_name}: "
                     f"{vacation.start_date:%d.%m.%Y}–{vacation.end_date:%d.%m.%Y}.",
                 )
             if (
-                vacation.manager_telegram_user_id is not None
-                and vacation.manager_telegram_user_id != vacation.telegram_user_id
+                vacation.team_lead_telegram_user_id is not None
+                and vacation.team_lead_telegram_user_id != vacation.telegram_user_id
             ):
                 await self.bot.send_message(
-                    vacation.manager_telegram_user_id,
+                    vacation.team_lead_telegram_user_id,
                     f"Отпуск сотрудника {vacation.employee_name}: "
                     f"{vacation.start_date:%d.%m.%Y}–{vacation.end_date:%d.%m.%Y}.",
                 )
@@ -62,7 +62,7 @@ class NotificationSender:
         for notification in notifications:
             delivered = 0
             failed = 0
-            for chat_id in self.database.list_notification_recipients():
+            for chat_id in self.database.list_notification_recipients(notification.recipient_roles):
                 try:
                     await self.bot.send_message(chat_id, notification.message_text)
                     delivered += 1

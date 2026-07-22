@@ -18,14 +18,14 @@ class VacationService:
 
     def initialize(self) -> None:
         self.database.initialize()
-        if self.settings.admin_telegram_id is not None:
-            if not self.settings.admin_full_name:
+        if self.settings.owner_telegram_id is not None:
+            if not self.settings.owner_full_name:
                 raise ValueError(
-                    "Для ADMIN_TELEGRAM_ID необходимо указать ADMIN_FULL_NAME в .env"
+                    "Для OWNER_TELEGRAM_ID необходимо указать OWNER_FULL_NAME в .env"
                 )
-            self.database.ensure_admin(
-                self.settings.admin_telegram_id,
-                self.settings.admin_full_name,
+            self.database.ensure_owner(
+                self.settings.owner_telegram_id,
+                self.settings.owner_full_name,
             )
 
     def register_employee(

@@ -93,26 +93,49 @@ def rename_employee(
 @employee_app.command("set-role")
 def set_employee_role(
     employee_id: int = typer.Argument(..., help="ID сотрудника"),
-    role: str = typer.Argument(..., help="employee, manager или admin"),
+    role: str = typer.Argument(..., help="guest, employee или owner"),
 ) -> None:
     """Назначить права сотрудника."""
     employee = build_service().database.update_employee(employee_id, role=role)
     typer.echo(f"Роль сотрудника #{employee.id}: {employee.role}")
 
 
-@employee_app.command("set-manager")
-def set_employee_manager(
+@employee_app.command("set-lead-property")
+def set_lead_property(
     employee_id: int = typer.Argument(..., help="ID сотрудника"),
-    manager_id: int | None = typer.Argument(
+    enabled: bool = typer.Argument(..., help="Включить или отключить свойство тимлида"),
+) -> None:
+    """Изменить свойство тимлида у сотрудника."""
+    employee = build_service().database.update_employee(
+        employee_id, is_team_lead=enabled
+    )
+    typer.echo(f"Свойство тимлида сотрудника #{employee.id}: {employee.is_team_lead}")
+
+
+@employee_app.command("set-mentor")
+def set_employee_mentor(
+    employee_id: int = typer.Argument(..., help="ID сотрудника"),
+    mentor_id: int | None = typer.Argument(None, help="ID ментора; без значения - удалить"),
+) -> None:
+    """Назначить или удалить ментора сотрудника."""
+    employee = build_service().database.update_employee(
+        employee_id, mentor_id=mentor_id, set_mentor=True
+    )
+    typer.echo(f"Ментор сотрудника #{employee.id}: {employee.mentor_id or 'не назначен'}")
+
+@employee_app.command("set-team-lead")
+def set_employee_team_lead(
+    employee_id: int = typer.Argument(..., help="ID сотрудника"),
+    team_lead_id: int | None = typer.Argument(
         None, help="ID руководителя; без значения — удалить"
     ),
 ) -> None:
     """Назначить или удалить руководителя сотрудника."""
     employee = build_service().database.update_employee(
-        employee_id, manager_id=manager_id, set_manager=True
+        employee_id, team_lead_id=team_lead_id, set_team_lead=True
     )
     typer.echo(
-        f"Руководитель сотрудника #{employee.id}: {employee.manager_id or 'не назначен'}"
+        f"Тимлид сотрудника #{employee.id}: {employee.team_lead_id or 'не назначен'}"
     )
 
 
