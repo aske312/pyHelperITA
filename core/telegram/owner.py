@@ -35,6 +35,7 @@ def _buttons(items: list[tuple[str, str]], width: int = 1):
     builder = InlineKeyboardBuilder()
     for text, data in items:
         builder.button(text=text, callback_data=data)
+    builder.button(text="✖️ Закрыть", callback_data="ui_close")
     builder.adjust(width)
     return builder.as_markup()
 
@@ -96,7 +97,9 @@ def create_owner_router(service: VacationService, settings: Settings) -> Router:
         try:
             employee = service.register_employee(validate_full_name(raw_name[1]))
         except ValueError as error:
-            await message.answer(f"Не удалось добавить сотрудника: {escape(str(error))}")
+            await message.answer(
+                f"Не удалось добавить сотрудника: {escape(str(error))}"
+            )
             return
         await message.answer(
             f"✅ <b>Сотрудник создан</b>\n\n"
@@ -120,7 +123,9 @@ def create_owner_router(service: VacationService, settings: Settings) -> Router:
         try:
             employee = service.register_employee(validate_full_name(message.text or ""))
         except ValueError as error:
-            await message.answer(f"Не удалось добавить сотрудника: {escape(str(error))}")
+            await message.answer(
+                f"Не удалось добавить сотрудника: {escape(str(error))}"
+            )
             return
         await state.clear()
         await message.answer(
@@ -129,6 +134,7 @@ def create_owner_router(service: VacationService, settings: Settings) -> Router:
             "Откройте /staff, чтобы заполнить профиль и назначить роль.",
             parse_mode="HTML",
         )
+
     @router.message(Command("guest"))
     async def create_guest(message: Message, state: FSMContext) -> None:
         if message.from_user is None:

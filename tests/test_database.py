@@ -467,24 +467,26 @@ def test_command_menus_hide_owner_commands(service):
     employee = service.register_employee("Меню Сотрудника", 4301)
     lead = service.register_employee("Меню Тимлида", 4302)
     owner = service.register_employee("Меню Владельца", 4303)
+    guest = service.register_employee("Меню Гостя", 4304)
     lead = service.database.update_employee(lead.id, is_team_lead=True)
     owner = service.database.update_employee(owner.id, role="owner")
+    guest = service.database.update_employee(guest.id, role="guest")
 
     employee_commands = {item.command for item in commands_for_employee(employee)}
     lead_commands = {item.command for item in commands_for_employee(lead)}
     owner_commands = {item.command for item in commands_for_employee(owner)}
+    guest_commands = {item.command for item in commands_for_employee(guest)}
 
     assert {"broadcast", "export", "guest"}.isdisjoint(employee_commands)
     assert {"broadcast", "export", "guest"}.isdisjoint(lead_commands)
     assert {"employees", "invite_team", "dismiss_team"} <= lead_commands
     assert {"team", "team_create", "delete_team"}.isdisjoint(lead_commands)
-    assert {
-        "staff",
-        "notifications",
-        "export",
-        "team_create",
-        "delete_team",
-    } <= owner_commands
+    assert {"staff", "teams", "notifications", "export"} <= owner_commands
+    assert {"team_create", "invite_team", "dismiss_team", "delete_team"}.isdisjoint(
+        owner_commands
+    )
+    assert {"absence", "my_events", "profile"} <= guest_commands
+    assert {"sick_leave", "day_off", "contacts", "events"}.isdisjoint(guest_commands)
     assert "guest" not in owner_commands
     assert {"broadcast", "reminder", "employees"}.isdisjoint(owner_commands)
 
@@ -547,6 +549,54 @@ def test_delete_employee_removes_regular_employee(service):
 
     with pytest.raises(LookupError):
         service.database.get_employee(employee.id)
+
+
+def test_owner_can_change_employee_id_with_related_records(service):
+    lead = service.register_employee("Руководитель Тестовый", 6251)
+    employee = service.register_employee("Сотрудник Тестовый", 6252)
+    service.database.update_employee(lead.id, is_team_lead=True)
+    service.database.update_employee(
+        employee.id, team_lead_id=lead.id, set_team_lead=True
+    )
+    service.database.add_day_off(employee.id, date(2026, 7, 23))
+
+    updated = service.database.update_employee_id(employee.id, 9001)
+
+    assert updated.id == 9001
+    assert int(service.database.list_day_offs(9001)[0]["employee_id"]) == 9001
+    assert service.database.get_employee_by_telegram(6252).id == 9001
+
+
+def test_managed_profile_fields_exclude_personal_hr_fields():
+    from core.telegram.profile import MANAGED_EDITABLE_FIELDS
+
+    fields = {field for _, field in MANAGED_EDITABLE_FIELDS}
+
+    assert {
+        "birth_date",
+        "phone",
+        "personal_email",
+        "direction",
+        "employment_date",
+    }.isdisjoint(fields)
+    assert {"full_name", "email", "location", "grade", "project_name"} <= fields
+
+
+def test_reference_validators_support_international_values():
+    from core.directories import (
+        validate_email,
+        validate_employee_id,
+        validate_person_name,
+        validate_phone,
+    )
+
+    assert validate_employee_id("999999") == 999999
+    assert validate_email("user@пример.рф") == "user@пример.рф"
+    assert validate_phone("+44 (20) 7946-0958") == "+442079460958"
+    assert validate_person_name("о'нил анна-мария") == "О'Нил Анна-Мария"
+
+    with pytest.raises(ValueError):
+        validate_employee_id("1000000")
 
 
 def test_notification_supports_selected_employees(service):

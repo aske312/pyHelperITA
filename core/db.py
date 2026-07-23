@@ -157,16 +157,9 @@ CREATE TABLE IF NOT EXISTS employee_integrations (
 
 
 def validate_full_name(value: str) -> str:
-    parts = " ".join(value.split()).split()
-    if len(parts) not in {2, 3}:
-        raise ValueError("Введите полное ФИО")
-    for part in parts:
-        letters = part.replace("-", "")
-        if len(letters) < 2 or not letters.isalpha():
-            raise ValueError("ФИО должно содержать только буквы и дефис")
-    return " ".join(
-        "-".join(piece.capitalize() for piece in part.split("-")) for part in parts
-    )
+    from core.directories import validate_person_name
+
+    return validate_person_name(value)
 
 
 def format_display_name(full_name: str) -> str:
@@ -909,6 +902,42 @@ class Database:
             if cursor.rowcount == 0:
                 raise LookupError(f"Сотрудник #{employee_id} не найден")
         return self.get_employee(employee_id)
+
+    def update_employee_id(self, employee_id: int, new_id: int) -> Employee:
+        if new_id <= 0 or new_id > 999_999:
+            raise ValueError("ID сотрудника должен содержать не более 6 цифр")
+        self.get_employee(employee_id)
+        if new_id == employee_id:
+            return self.get_employee(employee_id)
+        try:
+            self.get_employee(new_id)
+        except LookupError:
+            pass
+        else:
+            raise ValueError(f"Сотрудник с ID {new_id} уже существует")
+
+        with self.connect() as connection:
+            connection.execute("PRAGMA defer_foreign_keys = ON")
+            connection.execute(
+                "UPDATE employees SET id = ? WHERE id = ?", (new_id, employee_id)
+            )
+            tables = connection.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+            ).fetchall()
+            for table_row in tables:
+                table = str(table_row["name"])
+                for foreign_key in connection.execute(
+                    f'PRAGMA foreign_key_list("{table}")'
+                ):
+                    if str(foreign_key["table"]) != "employees":
+                        continue
+                    column = str(foreign_key["from"])
+                    connection.execute(
+                        f'UPDATE "{table}" SET "{column}" = ? WHERE "{column}" = ?',
+                        (new_id, employee_id),
+                    )
+        return self.get_employee(new_id)
 
     def delete_employee(self, employee_id: int) -> None:
         employee = self.get_employee(employee_id)

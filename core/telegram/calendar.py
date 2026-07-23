@@ -43,6 +43,7 @@ def _buttons(items: list[tuple[str, str]], width: int = 3):
     builder = InlineKeyboardBuilder()
     for text, data in items:
         builder.button(text=text, callback_data=data)
+    builder.button(text="✖️ Закрыть", callback_data="ui_close")
     builder.adjust(width)
     return builder.as_markup()
 
@@ -78,6 +79,7 @@ def _days(year: int, month: int, prefix: str, minimum: date | None = None):
                 )
             )
         rows.append(row)
+    rows.append([InlineKeyboardButton(text="✖️ Закрыть", callback_data="ui_close")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -143,6 +145,16 @@ def create_calendar_router(service: VacationService, settings: Settings) -> Rout
             return
         await start_selection(employee.id, False, state, message.answer)
 
+    @router.callback_query(F.data == "absence_kind:vacation")
+    async def absence_vacation(query: CallbackQuery, state: FSMContext) -> None:
+        employee = actor(query.from_user.id)
+        if employee is None or not employee.profile_completed:
+            await query.answer("Сначала завершите регистрацию.", show_alert=True)
+            return
+        await state.clear()
+        await start_selection(employee.id, False, state, query.message.edit_text)
+        await query.answer()
+
     @router.message(Command("my_events"))
     async def my_events(message: Message, state: FSMContext) -> None:
         if message.from_user is None:
@@ -157,7 +169,7 @@ def create_calendar_router(service: VacationService, settings: Settings) -> Rout
         day_offs = service.database.list_day_offs(employee.id)
         if not vacations and not sick_leaves and not day_offs:
             await message.answer(
-                "📅 Запланированных событий пока нет. Используйте /vacation, /sick_leave или /day_off."
+                "📅 Запланированных событий пока нет. Используйте /absence."
             )
             return
         items = [

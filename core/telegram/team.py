@@ -29,6 +29,7 @@ def _buttons(items: list[tuple[str, str]], width: int = 1):
     builder = InlineKeyboardBuilder()
     for text, data in items:
         builder.button(text=text, callback_data=data)
+    builder.button(text="✖️ Закрыть", callback_data="ui_close")
     builder.adjust(width)
     return builder.as_markup()
 
@@ -63,7 +64,7 @@ def create_team_router(service: VacationService, settings: Settings) -> Router:
         return service.database.get_employee_by_telegram(telegram_id)
 
     def available_teams(actor: Employee) -> list[Team]:
-        return service.database.list_teams(None if actor.role == "owner" else actor.id)
+        return service.database.list_teams(actor.id)
 
     def employee_label(employee: Employee) -> str:
         marks = []
@@ -80,11 +81,7 @@ def create_team_router(service: VacationService, settings: Settings) -> Router:
     async def show_employees_panel(message: Message, actor: Employee) -> None:
         teams = available_teams(actor)
         if not teams:
-            text = (
-                "👥 <b>Команды пока не созданы</b>"
-                if actor.role == "owner"
-                else "👥 <b>За вами пока не закреплена команда</b>"
-            )
+            text = "👥 <b>За вами пока не закреплена команда</b>"
             await message.answer(text, parse_mode="HTML")
             return
         for team in teams:
@@ -112,6 +109,84 @@ def create_team_router(service: VacationService, settings: Settings) -> Router:
                 parse_mode="HTML",
                 reply_markup=_buttons(actions),
             )
+
+    async def show_all_teams(message: Message) -> None:
+        teams = service.database.list_teams()
+        items = [
+            (f"👥 {team.name} · {team.lead_name}", f"manage_team:{team.id}")
+            for team in teams
+        ]
+        items.append(("➕ Создать команду", "teams_create"))
+        text = (
+            "👥 <b>Все команды</b>\n\nВыберите команду для управления:"
+            if teams
+            else "👥 <b>Команд пока нет</b>\n\nСоздайте первую команду."
+        )
+        await message.answer(text, parse_mode="HTML", reply_markup=_buttons(items))
+
+    @router.message(Command("teams"))
+    async def teams_command(message: Message) -> None:
+        if message.from_user is None:
+            return
+        current = get_actor(message.from_user.id)
+        if current is None or current.role != "owner":
+            await message.answer(
+                "Управление всеми командами доступно только владельцу."
+            )
+            return
+        await show_all_teams(message)
+
+    @router.callback_query(F.data.startswith("manage_team:"))
+    async def manage_team(query: CallbackQuery) -> None:
+        current = get_actor(query.from_user.id)
+        if current is None or current.role != "owner":
+            await query.answer("Недостаточно прав.", show_alert=True)
+            return
+        team = service.database.get_team(int((query.data or "").split(":")[1]))
+        members = service.database.list_team_members(team.id)
+        await query.message.edit_text(
+            _team_card(
+                team,
+                members,
+                {
+                    item.id: status
+                    for item in members
+                    if (status := service.database.employee_presence_status(item.id))
+                },
+            ),
+            parse_mode="HTML",
+            reply_markup=_buttons(
+                [
+                    ("👤 Сотрудники", f"team_members:{team.id}"),
+                    ("➕ Пригласить", f"invite_team:{team.id}"),
+                    ("➖ Исключить", f"dismiss_team:{team.id}"),
+                    ("🔔 Оповестить", f"team_notification:{team.id}"),
+                    ("🗑 Удалить команду", f"delete_team:{team.id}"),
+                    ("← Все команды", "teams_back"),
+                ]
+            ),
+        )
+        await query.answer()
+
+    @router.callback_query(F.data == "teams_back")
+    async def teams_back(query: CallbackQuery) -> None:
+        current = get_actor(query.from_user.id)
+        if current is None or current.role != "owner":
+            await query.answer("Недостаточно прав.", show_alert=True)
+            return
+        teams = service.database.list_teams()
+        await query.message.edit_text(
+            "👥 <b>Все команды</b>\n\nВыберите команду для управления:",
+            parse_mode="HTML",
+            reply_markup=_buttons(
+                [
+                    (f"👥 {team.name} · {team.lead_name}", f"manage_team:{team.id}")
+                    for team in teams
+                ]
+                + [("➕ Создать команду", "teams_create")]
+            ),
+        )
+        await query.answer()
 
     @router.message(Command("employees"))
     async def employees(message: Message) -> None:
@@ -150,7 +225,7 @@ def create_team_router(service: VacationService, settings: Settings) -> Router:
     async def team_notification_start(query: CallbackQuery, state: FSMContext) -> None:
         current = get_actor(query.from_user.id)
         team = service.database.get_team(int((query.data or "").split(":")[1]))
-        if current is None or team.lead_id != current.id:
+        if current is None or (current.role != "owner" and team.lead_id != current.id):
             await query.answer("Недостаточно прав.", show_alert=True)
             return
         await state.set_state(TeamNotificationForm.waiting_datetime)
@@ -187,7 +262,7 @@ def create_team_router(service: VacationService, settings: Settings) -> Router:
         data = await state.get_data()
         team = service.database.get_team(int(data["team_notification_id"]))
         text = (message.text or "").strip()
-        if current is None or team.lead_id != current.id:
+        if current is None or (current.role != "owner" and team.lead_id != current.id):
             await state.clear()
             return
         if not text:
@@ -235,6 +310,34 @@ def create_team_router(service: VacationService, settings: Settings) -> Router:
                 ]
             ),
         )
+
+    @router.callback_query(F.data == "teams_create")
+    async def teams_create(query: CallbackQuery) -> None:
+        current = get_actor(query.from_user.id)
+        if current is None or current.role != "owner":
+            await query.answer("Недостаточно прав.", show_alert=True)
+            return
+        leaders = [
+            item
+            for item in service.database.list_employees()
+            if item.is_team_lead and item.role != "guest"
+        ]
+        if not leaders:
+            await query.answer(
+                "Сначала назначьте руководителя через /staff.", show_alert=True
+            )
+            return
+        await query.message.edit_text(
+            "⭐ <b>Новая команда</b>\n\nВыберите руководителя:",
+            parse_mode="HTML",
+            reply_markup=_buttons(
+                [
+                    (employee_label(item), f"create_team_lead:{item.id}")
+                    for item in leaders
+                ]
+            ),
+        )
+        await query.answer()
 
     @router.callback_query(F.data.startswith("create_team_lead:"))
     async def create_team_lead(query: CallbackQuery, state: FSMContext) -> None:

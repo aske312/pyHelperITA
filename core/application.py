@@ -43,9 +43,8 @@ router = Router()
 _service: VacationService | None = None
 
 BASE_COMMANDS = [
-    BotCommand(command="vacation", description="Добавить отпуск"),
-    BotCommand(command="sick_leave", description="Оформить или закрыть больничный"),
-    BotCommand(command="day_off", description="Оформить DayOff"),
+    BotCommand(command="clear", description="Закрыть меню и сбросить ввод"),
+    BotCommand(command="absence", description="Оформить отсутствие"),
     BotCommand(command="my_events", description="Мои события: просмотр и управление"),
     BotCommand(command="profile", description="Мой профиль"),
     BotCommand(command="contacts", description="Контакты сотрудников"),
@@ -54,21 +53,21 @@ BASE_COMMANDS = [
     BotCommand(command="integrations", description="Почта и календарь"),
 ]
 TEAM_LEAD_COMMANDS = BASE_COMMANDS + [
-    BotCommand(command="employees", description="Моя команда и сотрудники"),
+    BotCommand(command="employees", description="Моя команда"),
     BotCommand(command="invite_team", description="Пригласить в команду"),
     BotCommand(command="dismiss_team", description="Исключить из команды"),
 ]
 OWNER_COMMANDS = BASE_COMMANDS + [
     BotCommand(command="staff", description="Все сотрудники"),
+    BotCommand(command="teams", description="Все команды"),
     BotCommand(command="employee_add", description="Добавить сотрудника"),
-    BotCommand(command="team_create", description="Создать команду"),
-    BotCommand(command="invite_team", description="Пригласить в команду"),
-    BotCommand(command="dismiss_team", description="Исключить из команды"),
-    BotCommand(command="delete_team", description="Удалить команду"),
     BotCommand(command="notifications", description="Нотификации"),
     BotCommand(command="export", description="Выгрузить XLSX"),
 ]
 GUEST_COMMANDS = [
+    BotCommand(command="clear", description="Закрыть меню и сбросить ввод"),
+    BotCommand(command="absence", description="Оформить отпуск"),
+    BotCommand(command="my_events", description="Мои отпуска"),
     BotCommand(command="profile", description="Мой профиль"),
     BotCommand(command="help", description="Доступные команды"),
     BotCommand(command="integrations", description="Почта и календарь"),
@@ -85,9 +84,7 @@ def commands_for_employee(employee) -> list[BotCommand]:
     if employee.role == "owner":
         commands = list(OWNER_COMMANDS)
         if employee.is_team_lead:
-            commands.append(
-                BotCommand(command="employees", description="Моя команда и сотрудники")
-            )
+            commands.append(BotCommand(command="employees", description="Моя команда"))
     elif employee.role == "guest":
         commands = list(GUEST_COMMANDS)
     elif employee.is_team_lead:
@@ -163,6 +160,33 @@ async def help_command(message: Message, state: FSMContext) -> None:
             FSInputFile(guide, filename=guide.name),
             caption="📘 Руководство для вашей роли",
         )
+
+
+@router.message(Command("clear", "cancel"))
+async def clear_command(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    if message.reply_to_message and message.reply_to_message.from_user:
+        if message.reply_to_message.from_user.is_bot:
+            try:
+                await message.bot.delete_message(
+                    message.chat.id, message.reply_to_message.message_id
+                )
+            except Exception:
+                pass
+    try:
+        await message.delete()
+    except Exception:
+        await message.answer("Состояние очищено. Бот ожидает команду.")
+
+
+@router.callback_query(F.data == "ui_close")
+async def close_current_output(query: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    try:
+        await query.message.delete()
+    except Exception:
+        await query.message.edit_text("Меню закрыто. Бот ожидает команду.")
+    await query.answer()
 
 
 def get_owner(message: Message):

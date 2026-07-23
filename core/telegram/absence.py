@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 from aiogram import F, Router
 from aiogram.exceptions import TelegramAPIError
@@ -24,8 +24,13 @@ class AbsenceForm(StatesGroup):
 
 def _date_buttons(prefix: str):
     builder = InlineKeyboardBuilder()
+    yesterday = date.today() - timedelta(days=1)
+    builder.button(text="Вчера", callback_data=f"{prefix}:{yesterday.isoformat()}")
     builder.button(text="Сегодня", callback_data=f"{prefix}:{date.today().isoformat()}")
-    builder.adjust(1)
+    tomorrow = date.today() + timedelta(days=1)
+    builder.button(text="Завтра", callback_data=f"{prefix}:{tomorrow.isoformat()}")
+    builder.button(text="✖️ Закрыть", callback_data="ui_close")
+    builder.adjust(3)
     return builder.as_markup()
 
 
@@ -77,6 +82,65 @@ def create_absence_router(service: VacationService, settings: Settings) -> Route
             except TelegramAPIError:
                 pass
 
+    @router.message(Command("absence"))
+    async def absence_menu(message: Message, state: FSMContext) -> None:
+        if message.from_user is None:
+            return
+        employee = actor(message.from_user.id)
+        if employee is None or not employee.profile_completed:
+            await message.answer("Сначала завершите регистрацию через /start.")
+            return
+        await state.clear()
+        builder = InlineKeyboardBuilder()
+        builder.button(text="🏖 Отпуск", callback_data="absence_kind:vacation")
+        if employee.role != "guest":
+            builder.button(text="🤒 Больничный", callback_data="absence_kind:sick")
+            builder.button(text="🌿 Day Off", callback_data="absence_kind:dayoff")
+        builder.button(text="✖️ Закрыть", callback_data="ui_close")
+        builder.adjust(1)
+        await message.answer(
+            "📅 <b>Новое отсутствие</b>\n\nВыберите тип события:",
+            parse_mode="HTML",
+            reply_markup=builder.as_markup(),
+        )
+
+    @router.callback_query(F.data == "absence_kind:sick")
+    async def absence_sick(query: CallbackQuery, state: FSMContext) -> None:
+        employee = actor(query.from_user.id)
+        if employee is None or employee.role == "guest":
+            await query.answer("Этот тип отсутствия недоступен.", show_alert=True)
+            return
+        await state.clear()
+        active = service.database.get_active_sick_leave(employee.id)
+        if active is None:
+            await state.set_state(AbsenceForm.sick_start)
+            await query.message.edit_text(
+                "🤒 Укажите дату начала больничного в формате ДД.ММ.ГГГГ.",
+                reply_markup=_date_buttons("sick_start"),
+            )
+        else:
+            await state.set_state(AbsenceForm.sick_end)
+            await state.set_data({"sick_leave_id": int(active["id"])})
+            await query.message.edit_text(
+                f"🤒 Больничный открыт с {date.fromisoformat(str(active['start_date'])):%d.%m.%Y}.\n"
+                "Укажите дату окончания ДД.ММ.ГГГГ:",
+                reply_markup=_date_buttons("sick_end"),
+            )
+        await query.answer()
+
+    @router.callback_query(F.data == "absence_kind:dayoff")
+    async def absence_dayoff(query: CallbackQuery, state: FSMContext) -> None:
+        employee = actor(query.from_user.id)
+        if employee is None or employee.role == "guest":
+            await query.answer("Этот тип отсутствия недоступен.", show_alert=True)
+            return
+        await state.set_state(AbsenceForm.day_off_date)
+        await query.message.edit_text(
+            "🌿 Выберите день Day Off или введите дату ДД.ММ.ГГГГ:",
+            reply_markup=_date_buttons("day_off_date"),
+        )
+        await query.answer()
+
     @router.message(Command("sick_leave"))
     async def sick_leave(message: Message, state: FSMContext) -> None:
         if message.from_user is None:
@@ -117,7 +181,7 @@ def create_absence_router(service: VacationService, settings: Settings) -> Route
             return
         await state.clear()
         await message.answer(
-            "✅ Больничный открыт. Для закрытия снова вызовите /sick_leave."
+            "✅ Больничный открыт. Для закрытия выберите «Больничный» в /absence."
         )
         await send_lead(
             bot or message.bot,
@@ -207,6 +271,15 @@ def create_absence_router(service: VacationService, settings: Settings) -> Route
         bot=None,
     ) -> None:
         employee = actor(user_id or message.from_user.id)
+        if (
+            not date.today() - timedelta(days=30)
+            <= value
+            <= date.today() + timedelta(days=1)
+        ):
+            await message.answer(
+                "DayOff можно оформить за последние 30 дней, сегодня или на завтра."
+            )
+            return
         try:
             _, anomaly = service.database.add_day_off(employee.id, value)
         except ValueError as error:
@@ -254,6 +327,7 @@ def create_absence_router(service: VacationService, settings: Settings) -> Route
         builder.button(
             text="🗑 Удалить", callback_data=f"absence_delete:{kind}:{raw_id}"
         )
+        builder.button(text="✖️ Закрыть", callback_data="ui_close")
         builder.adjust(1)
         await query.message.edit_text(
             event_text(kind, row) + "\n\nВыберите действие:",
@@ -319,6 +393,7 @@ def create_absence_router(service: VacationService, settings: Settings) -> Route
             text="Удалить безвозвратно",
             callback_data=f"absence_confirm_delete:{kind}:{raw_id}",
         )
+        builder.button(text="✖️ Закрыть", callback_data="ui_close")
         await query.message.edit_text(
             event_text(kind, row) + "\n\nПодтвердите удаление:",
             parse_mode="HTML",
@@ -345,8 +420,8 @@ def create_absence_router(service: VacationService, settings: Settings) -> Route
     async def staff_events(query: CallbackQuery) -> None:
         current = actor(query.from_user.id)
         employee_id = int((query.data or "").split(":")[1])
-        if current is None or current.role != "owner":
-            await query.answer("Команда доступна только владельцу.", show_alert=True)
+        if current is None or not can_edit_event(current, employee_id):
+            await query.answer("Недостаточно прав.", show_alert=True)
             return
         employee = service.database.get_employee(employee_id)
         builder = InlineKeyboardBuilder()
@@ -365,6 +440,7 @@ def create_absence_router(service: VacationService, settings: Settings) -> Route
                 text=f"🌿 DayOff · {date.fromisoformat(str(row['day_date'])):%d.%m.%Y}",
                 callback_data=f"absence_actions:dayoff:{row['id']}",
             )
+        builder.button(text="✖️ Закрыть", callback_data="ui_close")
         builder.adjust(1)
         if not builder.buttons:
             await query.message.edit_text(

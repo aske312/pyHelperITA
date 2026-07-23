@@ -46,11 +46,14 @@ class Settings(BaseSettings):
     feature_mail_integrations: bool = True
     feature_calendar_integrations: bool = True
     feature_config_path: Path = Path("features.config")
+    directories_path: Path = Path("config/directories.json")
     onboarding_password: str = Field(default="", repr=False)
     daily_events_time: str = "09:10"
     command_start: bool = True
+    command_clear: bool = True
     command_help: bool = True
     command_vacation: bool = True
+    command_absence: bool = True
     command_sick_leave: bool = True
     command_day_off: bool = True
     command_my_events: bool = True
@@ -61,6 +64,7 @@ class Settings(BaseSettings):
     command_invite_team: bool = True
     command_dismiss_team: bool = True
     command_staff: bool = True
+    command_teams: bool = True
     command_team_create: bool = True
     command_delete_team: bool = True
     command_guest: bool = False
@@ -74,7 +78,8 @@ class Settings(BaseSettings):
     default_guest_access: bool = True
     default_send_role_guide: bool = True
     profile_relations: bool = True
-    guest_welcome_path: Path = Path("docs/guest_welcome.md")
+    employee_onboarding_path: Path = Path("docs/onboarding_employee.md")
+    guest_onboarding_path: Path = Path("docs/onboarding_guest.md")
     operational_logging_enabled: bool = True
     technical_logging_enabled: bool = True
     log_directory: Path = Path("logs")
@@ -102,8 +107,10 @@ class Settings(BaseSettings):
             "MAIL_INTEGRATIONS": "feature_mail_integrations",
             "CALENDAR_INTEGRATIONS": "feature_calendar_integrations",
             "CMD_START": "command_start",
+            "CMD_CLEAR": "command_clear",
             "CMD_HELP": "command_help",
             "CMD_VACATION": "command_vacation",
+            "CMD_ABSENCE": "command_absence",
             "CMD_SICK_LEAVE": "command_sick_leave",
             "CMD_DAY_OFF": "command_day_off",
             "CMD_MY_EVENTS": "command_my_events",
@@ -114,6 +121,7 @@ class Settings(BaseSettings):
             "CMD_INVITE_TEAM": "command_invite_team",
             "CMD_DISMISS_TEAM": "command_dismiss_team",
             "CMD_STAFF": "command_staff",
+            "CMD_TEAMS": "command_teams",
             "CMD_TEAM_CREATE": "command_team_create",
             "CMD_DELETE_TEAM": "command_delete_team",
             "CMD_GUEST": "command_guest",
@@ -177,8 +185,11 @@ class Settings(BaseSettings):
             return False
         field = {
             "start": "command_start",
+            "clear": "command_clear",
+            "cancel": "command_clear",
             "help": "command_help",
             "vacation": "command_vacation",
+            "absence": "command_absence",
             "sick_leave": "command_sick_leave",
             "day_off": "command_day_off",
             "my_events": "command_my_events",
@@ -189,6 +200,7 @@ class Settings(BaseSettings):
             "invite_team": "command_invite_team",
             "dismiss_team": "command_dismiss_team",
             "staff": "command_staff",
+            "teams": "command_teams",
             "team_create": "command_team_create",
             "delete_team": "command_delete_team",
             "guest": "command_guest",

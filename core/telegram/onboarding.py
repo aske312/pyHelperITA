@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import re
-
 from aiogram import F, Router
 from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
@@ -11,6 +9,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from core.config import Settings
 from core.db import validate_full_name
+from core.directories import Directories, validate_city, validate_email, validate_phone
 from core.service import VacationService
 
 
@@ -26,12 +25,14 @@ def _buttons(items: list[tuple[str, str]], width: int = 3):
     builder = InlineKeyboardBuilder()
     for text, data in items:
         builder.button(text=text, callback_data=data)
+    builder.button(text="✖️ Закрыть", callback_data="ui_close")
     builder.adjust(width)
     return builder.as_markup()
 
 
 def create_onboarding_router(service: VacationService, settings: Settings) -> Router:
     router = Router(name="onboarding")
+    directories = Directories.load(settings.directories_path)
 
     async def continue_onboarding(profile, send, state: FSMContext) -> None:
         if not profile.profile_completed:
@@ -42,7 +43,7 @@ def create_onboarding_router(service: VacationService, settings: Settings) -> Ro
             await send("Введите номер телефона:")
         elif not profile.location:
             await state.set_state(Onboarding.waiting_for_location)
-            await send("Введите локацию пребывания:")
+            await send("Введите город:")
         elif profile.grade is None:
             await state.clear()
             await send(
@@ -50,7 +51,7 @@ def create_onboarding_router(service: VacationService, settings: Settings) -> Ro
                 reply_markup=_buttons(
                     [
                         (value, f"onboarding_grade:{value}")
-                        for value in ("Intern", "Junior", "Middle", "Senior", "RM1")
+                        for value in directories.grades
                     ]
                 ),
             )
@@ -61,7 +62,7 @@ def create_onboarding_router(service: VacationService, settings: Settings) -> Ro
                 reply_markup=_buttons(
                     [
                         (value, f"onboarding_direction:{value}")
-                        for value in ("SA", "QA", "DEV", "HR")
+                        for value in directories.directions
                     ],
                     4,
                 ),
@@ -85,10 +86,15 @@ def create_onboarding_router(service: VacationService, settings: Settings) -> Ro
         from core.application import set_employee_command_menu
 
         await set_employee_command_menu(bot, profile)
-        if role == "guest" and settings.guest_welcome_path.exists():
-            welcome = settings.guest_welcome_path.read_text(encoding="utf-8").strip()
-            if welcome:
-                await send(welcome)
+        onboarding_path = (
+            settings.guest_onboarding_path
+            if role == "guest"
+            else settings.employee_onboarding_path
+        )
+        if onboarding_path.exists():
+            onboarding = onboarding_path.read_text(encoding="utf-8").strip()
+            if onboarding:
+                await send(onboarding)
         await continue_onboarding(profile, send, state)
 
     @router.message(CommandStart())
@@ -109,6 +115,16 @@ def create_onboarding_router(service: VacationService, settings: Settings) -> Ro
             from core.application import set_employee_command_menu
 
             await set_employee_command_menu(message.bot, profile)
+            if not profile.profile_completed:
+                onboarding_path = (
+                    settings.guest_onboarding_path
+                    if profile.role == "guest"
+                    else settings.employee_onboarding_path
+                )
+                if onboarding_path.exists():
+                    onboarding = onboarding_path.read_text(encoding="utf-8").strip()
+                    if onboarding:
+                        await message.answer(onboarding)
             await continue_onboarding(profile, message.answer, state)
             return
 
@@ -164,7 +180,10 @@ def create_onboarding_router(service: VacationService, settings: Settings) -> Ro
             if profile is None:
                 raise LookupError
             profile = service.database.complete_profile(
-                profile.id, validate_full_name(message.text or "")
+                profile.id,
+                validate_full_name(
+                    directories.ensure_allowed_text(message.text or "", maximum=150)
+                ),
             )
         except (ValueError, LookupError) as error:
             await message.answer(f"{error}. Пример: Иванов Иван Иванович")
@@ -174,7 +193,11 @@ def create_onboarding_router(service: VacationService, settings: Settings) -> Ro
     @router.message(Onboarding.waiting_for_phone, F.text & ~F.text.startswith("/"))
     async def save_phone(message: Message, state: FSMContext) -> None:
         value = (message.text or "").strip()
-        if message.from_user is None or not re.fullmatch(r"\+?[0-9 ()-]{7,20}", value):
+        if message.from_user is None:
+            return
+        try:
+            value = validate_phone(value)
+        except ValueError:
             await message.answer("Некорректный номер телефона.")
             return
         profile = service.database.get_employee_by_telegram(message.from_user.id)
@@ -189,8 +212,12 @@ def create_onboarding_router(service: VacationService, settings: Settings) -> Ro
     @router.message(Onboarding.waiting_for_location, F.text & ~F.text.startswith("/"))
     async def save_location(message: Message, state: FSMContext) -> None:
         value = (message.text or "").strip()
-        if message.from_user is None or not value:
-            await message.answer("Локация не может быть пустой.")
+        if message.from_user is None:
+            return
+        try:
+            value = validate_city(value, directories)
+        except ValueError:
+            await message.answer("Введите корректное название города.")
             return
         profile = service.database.get_employee_by_telegram(message.from_user.id)
         if profile is None:
@@ -225,10 +252,11 @@ def create_onboarding_router(service: VacationService, settings: Settings) -> Ro
 
     @router.message(Onboarding.waiting_for_email, F.text & ~F.text.startswith("/"))
     async def save_email(message: Message, state: FSMContext) -> None:
-        value = (message.text or "").strip().lower()
-        if message.from_user is None or not re.fullmatch(
-            r"[^@\s]+@[^@\s]+\.[^@\s]+", value
-        ):
+        if message.from_user is None:
+            return
+        try:
+            value = validate_email(message.text or "")
+        except ValueError:
             await message.answer("Некорректный Email.")
             return
         profile = service.database.get_employee_by_telegram(message.from_user.id)

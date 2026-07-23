@@ -22,6 +22,7 @@ def _buttons(items: list[tuple[str, str]], width: int = 1):
     builder = InlineKeyboardBuilder()
     for text, data in items:
         builder.button(text=text, callback_data=data)
+    builder.button(text="✖️ Закрыть", callback_data="ui_close")
     builder.adjust(width)
     return builder.as_markup()
 
@@ -48,9 +49,7 @@ def _status_text(item) -> str:
     )
 
 
-def create_integrations_router(
-    service: VacationService, settings: Settings
-) -> Router:
+def create_integrations_router(service: VacationService, settings: Settings) -> Router:
     router = Router(name="integrations")
     integrations = IntegrationService(service.database)
 
@@ -100,7 +99,11 @@ def create_integrations_router(
             await query.answer("Интеграция с календарём отключена.", show_alert=True)
             return
         providers = (
-            [("Google Gmail", "google"), ("Microsoft 365", "microsoft"), ("SMTP", "smtp")]
+            [
+                ("Google Gmail", "google"),
+                ("Microsoft 365", "microsoft"),
+                ("SMTP", "smtp"),
+            ]
             if kind == "mail"
             else [
                 ("Google Calendar", "google"),
@@ -138,9 +141,7 @@ def create_integrations_router(
         await query.message.edit_text(prompt)
         await query.answer()
 
-    @router.message(
-        IntegrationForm.waiting_value, F.text & ~F.text.startswith("/")
-    )
+    @router.message(IntegrationForm.waiting_value, F.text & ~F.text.startswith("/"))
     async def integration_value(message: Message, state: FSMContext) -> None:
         if message.from_user is None:
             return
@@ -186,4 +187,3 @@ def create_integrations_router(
         await query.answer()
 
     return router
-

@@ -18,6 +18,7 @@ def _period_buttons():
     builder.button(text="Сегодня", callback_data="events_period:today")
     builder.button(text="Текущая неделя", callback_data="events_period:week")
     builder.button(text="Предстоящий месяц", callback_data="events_period:month")
+    builder.button(text="✖️ Закрыть", callback_data="ui_close")
     builder.adjust(1)
     return builder.as_markup()
 
