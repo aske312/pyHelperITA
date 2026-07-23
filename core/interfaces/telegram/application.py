@@ -154,7 +154,7 @@ async def help_command(message: Message, state: FSMContext) -> None:
         if employee is not None and employee.role == "guest"
         else "employee.md"
     )
-    guide = Path(__file__).resolve().parents[3] / "docs" / "guides" / guide_name
+    guide = get_settings().guides_path / guide_name
     if get_settings().default_send_role_guide and guide.exists():
         await message.answer_document(
             FSInputFile(guide, filename=guide.name),

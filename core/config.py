@@ -52,6 +52,7 @@ class Settings(BaseSettings):
     feature_config_path: Path = Path("config/features.config")
     directories_path: Path = Path("config/directories.json")
     permissions_path: Path = Path("config/permissions.json")
+    guides_path: Path = Path("docs/guides")
     integration_secret_key: str = Field(default="", repr=False)
     onboarding_password: str = Field(default="", repr=False)
     daily_events_time: str = "09:10"

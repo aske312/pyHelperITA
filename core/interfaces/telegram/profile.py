@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from html import escape
-from pathlib import Path
 
 from aiogram import F, Router
 from aiogram.filters import Command
@@ -12,6 +11,7 @@ from aiogram.types import CallbackQuery, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from core.access import can_manage, visible_contacts
+from core.config import get_settings
 from core.db import format_display_name, validate_full_name
 from core.directories import (
     Directories,
@@ -29,7 +29,7 @@ class ProfileForm(StatesGroup):
 
 FORMAT_LABELS = {"hybrid": "Гибрид", "remote": "Удаленка", "office": "Офис"}
 REFERENCE_DIRECTORIES = Directories.load(
-    Path(__file__).resolve().parents[3] / "config" / "directories.json"
+    get_settings().directories_path
 )
 EDITABLE_FIELDS = (
     ("ФИО", "full_name"),
