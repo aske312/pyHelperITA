@@ -206,7 +206,9 @@ def _export_buttons(items: list[tuple[str, str]]):
 
 async def _send_export(target, year: int | None) -> None:
     items = get_service().database.list_vacations(year=year)
-    with TemporaryDirectory() as directory:
+    temp_root = Path(".temp")
+    temp_root.mkdir(parents=True, exist_ok=True)
+    with TemporaryDirectory(dir=temp_root) as directory:
         path = export_vacations_xlsx(items, Path(directory) / "vacations.xlsx")
         await target.answer_document(
             FSInputFile(path, filename=f"vacations-{year or 'all'}.xlsx"),

@@ -18,7 +18,7 @@ def _process_is_running(pid: int) -> bool:
 
 
 @contextmanager
-def single_bot_instance(lock_path: Path = Path(".tmp/bot.pid")):
+def single_bot_instance(lock_path: Path = Path(".temp/bot.pid")):
     """Prevent two polling processes from using the same Telegram token."""
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     current_pid = os.getpid()

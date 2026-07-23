@@ -86,7 +86,7 @@ install_and_start_service() {
   local service_user
   local unit_tmp
   service_user="${SUDO_USER:-$(id -un)}"
-  unit_tmp="$(mktemp)"
+  unit_tmp="$(mktemp "$ROOT/.temp/systemd-unit.XXXXXX")"
 
   cat >"$unit_tmp" <<EOF
 [Unit]
@@ -133,7 +133,9 @@ fi
 
 install_system_dependencies
 
-mkdir -p "$ROOT/.tmp" "$ROOT/data" "$ROOT/logs" "$ROOT/backups"
+mkdir -p "$ROOT/.temp" "$ROOT/data" "$ROOT/logs" "$ROOT/backups"
+export TMPDIR="$ROOT/.temp"
+export PIP_CACHE_DIR="$ROOT/.temp/pip-cache"
 
 if [[ ! -x "$VENV/bin/python" ]]; then
   if [[ -e "$VENV" ]]; then

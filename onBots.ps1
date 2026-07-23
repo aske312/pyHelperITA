@@ -6,7 +6,7 @@ $ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $VenvPath = Join-Path $ProjectRoot '.venv'
 $PythonPath = Join-Path $VenvPath 'Scripts\python.exe'
 $EnvPath = Join-Path $ProjectRoot '.env'
-$BuildTempPath = Join-Path $ProjectRoot '.tmp'
+$BuildTempPath = Join-Path $ProjectRoot '.temp'
 $InstallLog = Join-Path $BuildTempPath 'installer.log'
 $TotalSteps = 5
 $CurrentStep = 0
@@ -47,7 +47,7 @@ function Stop-Installer([string]$Text) {
     Write-Host '  ==================================================' -ForegroundColor DarkRed
     Write-Host '     SETUP FAILED' -ForegroundColor Red
     Write-Host ('     ' + $Text) -ForegroundColor White
-    Write-Host '     Details: .tmp\installer.log' -ForegroundColor DarkGray
+    Write-Host '     Details: .temp\installer.log' -ForegroundColor DarkGray
     Write-Host '  ==================================================' -ForegroundColor DarkRed
     exit 1
 }
@@ -72,6 +72,9 @@ function Invoke-Hidden(
 
 Set-Location $ProjectRoot
 New-Item -ItemType Directory -Force -Path $BuildTempPath | Out-Null
+$env:TEMP = $BuildTempPath
+$env:TMP = $BuildTempPath
+$env:PIP_CACHE_DIR = Join-Path $BuildTempPath 'pip-cache'
 Set-Content -Path $InstallLog -Value '' -Encoding utf8
 Write-Banner
 
