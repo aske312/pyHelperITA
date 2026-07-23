@@ -6,7 +6,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 COPY . .
-RUN pip install --no-cache-dir ./config
+RUN mkdir -p /app/.tmp /app/data /app/backups /app/logs \
+    && pip install --no-cache-dir ./config
 
 RUN useradd --create-home --uid 10001 appuser \
     && mkdir -p /app/data /app/backups /app/logs \

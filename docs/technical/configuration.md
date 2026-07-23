@@ -6,8 +6,7 @@
 - `permissions.json` — роли, наследование и permissions;
 - `directories.json` — справочные значения профилей;
 - `pyproject.toml`, `requirements.txt` — сборка и зависимости;
-- `compose.yaml`, `Dockerfile` — контейнерный запуск;
-- `setup.cfg` — параметры инструментов.
+- `compose.yaml`, `Dockerfile` — контейнерный запуск.
 
 `.env` остаётся в корне как локальный секретный runtime-файл и не коммитится.
 Пути можно переопределить полями `Settings` или переменными окружения.

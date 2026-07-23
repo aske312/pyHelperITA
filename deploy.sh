@@ -50,6 +50,8 @@ printf '  ───────────────────────�
 
 install_system_dependencies
 
+mkdir -p "$ROOT/.tmp" "$ROOT/data" "$ROOT/logs" "$ROOT/backups"
+
 if [[ ! -x "$VENV/bin/python" ]]; then
   if [[ -e "$VENV" ]]; then
     case "$VENV" in
@@ -73,8 +75,6 @@ if [[ ! -f "$ROOT/.env" ]]; then
   chmod 600 "$ROOT/.env"
   printf '  ! Создан .env — заполните секреты\n'
 fi
-
-mkdir -p "$ROOT/data" "$ROOT/logs" "$ROOT/backups"
 
 printf '  • Проверяю конфигурацию\n'
 "$VENV/bin/assistant-bot" doctor
