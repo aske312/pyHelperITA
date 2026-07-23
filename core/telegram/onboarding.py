@@ -9,12 +9,13 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-from bot.config import Settings
-from bot.db import validate_full_name
-from bot.service import VacationService
+from core.config import Settings
+from core.db import validate_full_name
+from core.service import VacationService
 
 
 class Onboarding(StatesGroup):
+    waiting_for_access_password = State()
     waiting_for_full_name = State()
     waiting_for_phone = State()
     waiting_for_location = State()
@@ -72,23 +73,87 @@ def create_onboarding_router(service: VacationService, settings: Settings) -> Ro
             await state.clear()
             await send(f"Профиль оформлен, {profile.full_name}.")
 
-    @router.message(CommandStart())
-    async def start_onboarding(message: Message, state: FSMContext) -> None:
-        user = message.from_user
-        if user is None:
-            return
-        await state.clear()
+    async def register_new_user(user, bot, send, state: FSMContext, role: str) -> None:
         profile = service.database.upsert_telegram_user(
             telegram_user_id=user.id,
             username=user.username,
             first_name=user.first_name,
             last_name=user.last_name,
             is_owner=user.id == settings.owner_telegram_id,
+            role_if_new=role,
         )
-        from bot.bot import set_employee_command_menu
+        from core.application import set_employee_command_menu
 
-        await set_employee_command_menu(message.bot, profile)
-        await continue_onboarding(profile, message.answer, state)
+        await set_employee_command_menu(bot, profile)
+        if role == "guest" and settings.guest_welcome_path.exists():
+            welcome = settings.guest_welcome_path.read_text(encoding="utf-8").strip()
+            if welcome:
+                await send(welcome)
+        await continue_onboarding(profile, send, state)
+
+    @router.message(CommandStart())
+    async def start_onboarding(message: Message, state: FSMContext) -> None:
+        user = message.from_user
+        if user is None:
+            return
+        await state.clear()
+        existing = service.database.get_employee_by_telegram(user.id)
+        if existing is not None:
+            profile = service.database.upsert_telegram_user(
+                telegram_user_id=user.id,
+                username=user.username,
+                first_name=user.first_name,
+                last_name=user.last_name,
+                is_owner=user.id == settings.owner_telegram_id,
+            )
+            from core.application import set_employee_command_menu
+
+            await set_employee_command_menu(message.bot, profile)
+            await continue_onboarding(profile, message.answer, state)
+            return
+
+        await state.set_state(Onboarding.waiting_for_access_password)
+        await message.answer(
+            "🔐 <b>Новый пользователь</b>\n\n"
+            "Введите пароль сотрудника или продолжите с гостевым доступом.",
+            parse_mode="HTML",
+            reply_markup=(
+                _buttons([("Продолжить как гость", "onboarding_as_guest")], 1)
+                if settings.default_guest_access
+                else None
+            ),
+        )
+
+    @router.message(
+        Onboarding.waiting_for_access_password, F.text & ~F.text.startswith("/")
+    )
+    async def check_access_password(message: Message, state: FSMContext) -> None:
+        if message.from_user is None:
+            return
+        if (message.text or "").strip() != settings.onboarding_password:
+            await message.answer(
+                "Пароль не подходит. Попробуйте ещё раз или выберите гостевой доступ.",
+                reply_markup=_buttons(
+                    [("Продолжить как гость", "onboarding_as_guest")], 1
+                ),
+            )
+            return
+        await register_new_user(
+            message.from_user, message.bot, message.answer, state, "employee"
+        )
+
+    @router.callback_query(F.data == "onboarding_as_guest")
+    async def register_as_guest(query: CallbackQuery, state: FSMContext) -> None:
+        if not settings.default_guest_access:
+            await query.answer("Гостевой вход отключён.", show_alert=True)
+            return
+        if service.database.get_employee_by_telegram(query.from_user.id) is not None:
+            await query.answer("Профиль уже зарегистрирован.", show_alert=True)
+            return
+        await query.answer("Гостевой доступ выбран")
+        await register_new_user(
+            query.from_user, query.bot, query.message.answer, state, "guest"
+        )
 
     @router.message(Onboarding.waiting_for_full_name, F.text & ~F.text.startswith("/"))
     async def save_full_name(message: Message, state: FSMContext) -> None:

@@ -6,6 +6,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 COPY config ./config
+COPY features.config ./features.config
 COPY bot ./bot
 RUN pip install --no-cache-dir ./config
 

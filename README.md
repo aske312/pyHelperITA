@@ -64,7 +64,11 @@ powershell -ExecutionPolicy Bypass -File .\onBots.ps1
 
 ```dotenv
 TELEGRAM_BOT_TOKEN=ваш-токен
+ONBOARDING_PASSWORD=ваш-секретный-пароль
 ```
+
+Пароль онбординга читается только из файла .env. Приложение не запустится с включённым
+онбордингом, если ONBOARDING_PASSWORD не задан.
 
 ### 3. Запустите бота
 
@@ -91,7 +95,8 @@ Telegram
 ```
 
 ```text
-bot/                приложение и Telegram-модули
+core/               ядро системы и Telegram-модули
+tests/              автоматические проверки
 config/             зависимости и контейнерная конфигурация
 data/               локальная база приложения
 docs/               дополнительная документация

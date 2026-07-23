@@ -5,6 +5,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from aiogram import F, Bot, Dispatcher, Router
+from aiogram import BaseMiddleware
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import (
@@ -17,32 +18,38 @@ from aiogram.types import (
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-from bot.config import get_settings
-from bot.export import export_vacations_xlsx
-from bot.logging import (
+from core.config import Settings, get_settings
+from core.export import export_vacations_xlsx
+from core.logging import (
     LoggedBot,
     OperationalLoggingMiddleware,
     configure_logging,
     log_resources,
 )
-from bot.reminders import NotificationSender, ReminderSender, SystemNotificationSender
-from bot.runtime import build_service
-from bot.service import VacationService
-from bot.telegram.calendar import create_calendar_router
-from bot.telegram.onboarding import create_onboarding_router
-from bot.telegram.owner import create_owner_router
-from bot.telegram.profile import create_profile_router
-from bot.telegram.team import create_team_router
+from core.instance import single_bot_instance
+from core.reminders import NotificationSender, ReminderSender, SystemNotificationSender
+from core.runtime import build_service
+from core.service import VacationService
+from core.telegram.absence import create_absence_router
+from core.telegram.calendar import create_calendar_router
+from core.telegram.events import create_events_router
+from core.telegram.onboarding import create_onboarding_router
+from core.telegram.owner import create_owner_router
+from core.telegram.profile import create_profile_router
+from core.telegram.team import create_team_router
 
 router = Router()
 _service: VacationService | None = None
 
 BASE_COMMANDS = [
     BotCommand(command="vacation", description="Добавить отпуск"),
-    BotCommand(command="my_vacations", description="Изменить или удалить отпуск"),
+    BotCommand(command="sick_leave", description="Оформить или закрыть больничный"),
+    BotCommand(command="day_off", description="Оформить DayOff"),
+    BotCommand(command="my_events", description="Мои события: просмотр и управление"),
     BotCommand(command="profile", description="Мой профиль"),
     BotCommand(command="contacts", description="Контакты сотрудников"),
     BotCommand(command="help", description="Доступные команды"),
+    BotCommand(command="events", description="События команды"),
 ]
 TEAM_LEAD_COMMANDS = BASE_COMMANDS + [
     BotCommand(command="employees", description="Моя команда и сотрудники"),
@@ -55,13 +62,11 @@ OWNER_COMMANDS = BASE_COMMANDS + [
     BotCommand(command="invite_team", description="Пригласить в команду"),
     BotCommand(command="dismiss_team", description="Исключить из команды"),
     BotCommand(command="delete_team", description="Удалить команду"),
-    BotCommand(command="guest", description="Добавить гостя"),
     BotCommand(command="notifications", description="Нотификации"),
     BotCommand(command="export", description="Выгрузить XLSX"),
 ]
 GUEST_COMMANDS = [
-    BotCommand(command="vacation", description="Добавить отпуск"),
-    BotCommand(command="my_vacations", description="Изменить или удалить отпуск"),
+    BotCommand(command="profile", description="Мой профиль"),
     BotCommand(command="help", description="Доступные команды"),
 ]
 
@@ -74,16 +79,39 @@ def get_service() -> VacationService:
 
 def commands_for_employee(employee) -> list[BotCommand]:
     if employee.role == "owner":
-        return OWNER_COMMANDS
-    if employee.role == "guest":
-        return GUEST_COMMANDS
-    if employee.is_team_lead:
-        return TEAM_LEAD_COMMANDS
-    return BASE_COMMANDS
+        commands = list(OWNER_COMMANDS)
+        if employee.is_team_lead:
+            commands.append(
+                BotCommand(command="employees", description="Моя команда и сотрудники")
+            )
+    elif employee.role == "guest":
+        commands = list(GUEST_COMMANDS)
+    elif employee.is_team_lead:
+        commands = list(TEAM_LEAD_COMMANDS)
+    else:
+        commands = list(BASE_COMMANDS)
+    settings = get_settings()
+    return [item for item in commands if settings.command_enabled(item.command)]
+
+
+class FeatureCommandMiddleware(BaseMiddleware):
+    def __init__(self, settings: Settings):
+        self.settings = settings
+
+    async def __call__(self, handler, event, data):
+        text = getattr(event, "text", None) or ""
+        if text.startswith("/"):
+            command = text[1:].split(maxsplit=1)[0].split("@", 1)[0]
+            if not self.settings.command_enabled(command):
+                await event.answer("Эта команда отключена в features.config.")
+                return None
+        return await handler(event, data)
 
 
 async def configure_command_menus(bot: Bot, service: VacationService) -> None:
-    await bot.set_my_commands(BASE_COMMANDS)
+    await bot.set_my_commands(
+        [item for item in BASE_COMMANDS if get_settings().command_enabled(item.command)]
+    )
     for employee in service.database.list_employees():
         if employee.telegram_user_id is not None:
             await bot.set_my_commands(
@@ -126,7 +154,7 @@ async def help_command(message: Message, state: FSMContext) -> None:
         else "employees.md"
     )
     guide = Path(__file__).resolve().parent.parent / "docs" / guide_name
-    if guide.exists():
+    if get_settings().default_send_role_guide and guide.exists():
         await message.answer_document(
             FSInputFile(guide, filename=guide.name),
             caption="📘 Руководство для вашей роли",
@@ -199,11 +227,14 @@ async def run_bot() -> None:
     settings = get_settings()
     if not settings.telegram_bot_token:
         raise RuntimeError("TELEGRAM_BOT_TOKEN не задан в .env")
+    if settings.feature_onboarding and not settings.onboarding_password:
+        raise RuntimeError("ONBOARDING_PASSWORD необходимо задать в файле .env")
     configure_logging(settings)
     _service = build_service()
     bot_class = LoggedBot if settings.operational_logging_enabled else Bot
     bot = bot_class(settings.telegram_bot_token)
     dispatcher = Dispatcher()
+    dispatcher.message.outer_middleware(FeatureCommandMiddleware(settings))
     if settings.operational_logging_enabled:
         dispatcher.update.outer_middleware(OperationalLoggingMiddleware())
     if settings.feature_onboarding:
@@ -214,7 +245,12 @@ async def run_bot() -> None:
         dispatcher.include_router(create_owner_router(_service, settings))
     if settings.feature_vacations:
         dispatcher.include_router(create_calendar_router(_service, settings))
-    dispatcher.include_router(create_team_router(_service, settings))
+    if settings.feature_absences:
+        dispatcher.include_router(create_absence_router(_service, settings))
+    if settings.feature_teams:
+        dispatcher.include_router(create_team_router(_service, settings))
+    if settings.feature_events:
+        dispatcher.include_router(create_events_router(_service, settings))
     dispatcher.include_router(router)
     await configure_command_menus(bot, _service)
     sender = ReminderSender(_service.database, settings, bot)
@@ -235,6 +271,7 @@ async def run_bot() -> None:
             max_instances=1,
             coalesce=True,
         )
+    if settings.feature_notifications or settings.feature_events:
         scheduler.add_job(
             system_notification_sender.send_due,
             "interval",
@@ -261,4 +298,5 @@ async def run_bot() -> None:
 
 
 def start_bot() -> None:
-    asyncio.run(run_bot())
+    with single_bot_instance():
+        asyncio.run(run_bot())

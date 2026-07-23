@@ -1,0 +1,1 @@
+"""Corporate assistant Telegram core."""

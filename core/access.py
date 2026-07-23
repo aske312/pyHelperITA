@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from bot.models import Employee
+from core.models import Employee
 
 ROLES = {"guest", "employee", "owner"}
 NOTIFICATION_GROUPS = {"guest", "employee", "team_lead", "owner"}

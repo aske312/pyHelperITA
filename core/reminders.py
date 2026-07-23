@@ -7,8 +7,9 @@ from zoneinfo import ZoneInfo
 from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError
 
-from bot.config import Settings
-from bot.db import Database
+from core.config import Settings
+from core.db import Database
+from core.events import format_events, list_events
 
 
 class ReminderSender:
@@ -96,7 +97,14 @@ class SystemNotificationSender:
             lead_chat_id,
             start_date,
             end_date,
-        ) in self.database.list_pending_vacation_lead_notifications():
+        ) in (
+            self.database.list_pending_vacation_lead_notifications()
+            if (
+                self.settings.feature_notifications
+                and self.settings.auto_vacation_notifications
+            )
+            else ()
+        ):
             sent += await self._send_once(
                 lead_chat_id,
                 "🏖 Сотрудник добавил отпуск\n\n"
@@ -107,10 +115,35 @@ class SystemNotificationSender:
                 str(vacation_id),
             )
 
-        if current.time().replace(tzinfo=None) < time(9, 30):
+        today = current.date()
+        if (
+            self.settings.feature_events
+            and self.settings.auto_daily_events
+            and current.time().replace(tzinfo=None)
+            >= time.fromisoformat(self.settings.daily_events_time)
+        ):
+            daily_text = format_events(
+                list_events(self.database, today, today), "События на сегодня"
+            )
+            for recipient in self.database.list_employees():
+                if (
+                    recipient.role == "guest"
+                    or not recipient.is_active
+                    or recipient.telegram_user_id is None
+                ):
+                    continue
+                sent += await self._send_once(
+                    recipient.telegram_user_id,
+                    daily_text,
+                    "daily_events",
+                    recipient.id,
+                    today.isoformat(),
+                )
+        if not self.settings.feature_notifications or current.time().replace(
+            tzinfo=None
+        ) < time(9, 30):
             return sent
 
-        today = current.date()
         for employee in self.database.list_employees():
             if not employee.is_active or employee.team_lead_id is None:
                 continue
@@ -121,10 +154,15 @@ class SystemNotificationSender:
             if lead.telegram_user_id is None:
                 continue
 
-            if employee.birth_date and (
-                employee.birth_date.month,
-                employee.birth_date.day,
-            ) == (today.month, today.day):
+            if (
+                self.settings.auto_birthday_notifications
+                and employee.birth_date
+                and (
+                    employee.birth_date.month,
+                    employee.birth_date.day,
+                )
+                == (today.month, today.day)
+            ):
                 sent += await self._send_once(
                     lead.telegram_user_id,
                     "🎂 Сегодня день рождения сотрудника\n\n"
@@ -134,7 +172,7 @@ class SystemNotificationSender:
                     str(today.year),
                 )
 
-            if employee.employment_date:
+            if self.settings.auto_probation_notifications and employee.employment_date:
                 probation_end = _add_months(employee.employment_date, 3)
                 if probation_end == today:
                     sent += await self._send_once(
@@ -146,6 +184,16 @@ class SystemNotificationSender:
                         employee.id,
                         probation_end.isoformat(),
                     )
+        for sick in self.database.list_long_active_sick_leaves(today):
+            sent += await self._send_once(
+                int(sick["lead_chat_id"]),
+                "⚠️ Аномалия больничного\n\n"
+                f"{sick['full_name']} находится на больничном более 10 дней "
+                f"(с {date.fromisoformat(str(sick['start_date'])):%d.%m.%Y}).",
+                "sick_leave_over_10_days",
+                int(sick["employee_id"]),
+                f"{sick['id']}:{today.isoformat()}",
+            )
         return sent
 
 

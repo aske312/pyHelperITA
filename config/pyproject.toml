@@ -19,18 +19,18 @@ dependencies = [
 dev = ["pytest==9.1.1", "pytest-cov==7.1.0", "ruff==0.15.22"]
 
 [project.scripts]
-assistant-bot = "bot.cli:app"
+assistant-bot = "core.cli:app"
 
 [tool.setuptools]
 package-dir = {"" = ".."}
 
 [tool.setuptools.packages.find]
 where = [".."]
-include = ["bot*"]
+include = ["core*"]
 
 [tool.pytest.ini_options]
 pythonpath = [".."]
-testpaths = ["../bot"]
+testpaths = ["../tests"]
 python_files = ["test_*.py"]
 
 [tool.ruff]
@@ -41,4 +41,4 @@ target-version = "py311"
 select = ["E", "F", "I", "UP", "B"]
 
 [tool.ruff.lint.per-file-ignores]
-"../bot/cli.py" = ["B008"]
+"../tests/cli.py" = ["B008"]

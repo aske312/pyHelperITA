@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from datetime import date, time
 
-from bot.config import Settings
-from bot.db import Database
-from bot.models import Employee, ReminderSettings, Vacation
+from core.config import Settings
+from core.db import Database
+from core.models import Employee, ReminderSettings, Vacation
 
 
 class VacationService:

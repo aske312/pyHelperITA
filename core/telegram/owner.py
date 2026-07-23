@@ -11,9 +11,9 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-from bot.config import Settings
-from bot.db import format_display_name, validate_full_name
-from bot.service import VacationService
+from core.config import Settings
+from core.db import format_display_name, validate_full_name
+from core.service import VacationService
 
 
 class GuestForm(StatesGroup):
@@ -41,6 +41,11 @@ def create_owner_router(service: VacationService, settings: Settings) -> Router:
     def actor(telegram_id: int):
         return service.database.get_employee_by_telegram(telegram_id)
 
+    def employee_label(employee) -> str:
+        label = format_display_name(employee.full_name)
+        status = service.database.employee_presence_status(employee.id)
+        return f"{label} · {status}" if status else label
+
     def is_owner(telegram_id: int) -> bool:
         employee = actor(telegram_id)
         return employee is not None and employee.role == "owner"
@@ -58,7 +63,7 @@ def create_owner_router(service: VacationService, settings: Settings) -> Router:
                 [
                     (
                         f"{'' if item.role == 'owner' else '⭐ ' if item.is_team_lead else ''}"
-                        f"{format_display_name(item.full_name)}",
+                        f"{employee_label(item)}",
                         f"employee:{item.id}",
                     )
                     for item in employees
@@ -94,7 +99,7 @@ def create_owner_router(service: VacationService, settings: Settings) -> Router:
             reply_markup=_buttons(
                 [
                     (
-                        format_display_name(item.full_name),
+                        employee_label(item),
                         f"guest_lead:{item.id}",
                     )
                     for item in leads
@@ -284,7 +289,7 @@ def create_owner_router(service: VacationService, settings: Settings) -> Router:
                 reply_markup=_buttons(
                     [
                         (
-                            format_display_name(item.full_name),
+                            employee_label(item),
                             f"notification_person:{item.id}",
                         )
                         for item in employees
@@ -336,8 +341,7 @@ def create_owner_router(service: VacationService, settings: Settings) -> Router:
             reply_markup=_buttons(
                 [
                     (
-                        f"{'✅ ' if item.id in selected else ''}"
-                        f"{format_display_name(item.full_name)}",
+                        f"{'✅ ' if item.id in selected else ''}{employee_label(item)}",
                         f"notification_person:{item.id}",
                     )
                     for item in employees

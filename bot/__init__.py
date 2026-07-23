@@ -1,1 +1,0 @@
-"""Corporate assistant Telegram bot."""

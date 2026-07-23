@@ -5,9 +5,9 @@ from pathlib import Path
 
 import typer
 
-from bot.bot import start_bot
-from bot.export import export_vacations_xlsx
-from bot.runtime import build_service
+from core.application import start_bot
+from core.export import export_vacations_xlsx
+from core.runtime import build_service
 
 app = typer.Typer(help="Корпоративный Telegram-бот помощник", no_args_is_help=True)
 employee_app = typer.Typer(help="Управление сотрудниками", no_args_is_help=True)
@@ -115,13 +115,18 @@ def set_lead_property(
 @employee_app.command("set-mentor")
 def set_employee_mentor(
     employee_id: int = typer.Argument(..., help="ID сотрудника"),
-    mentor_id: int | None = typer.Argument(None, help="ID ментора; без значения - удалить"),
+    mentor_id: int | None = typer.Argument(
+        None, help="ID ментора; без значения - удалить"
+    ),
 ) -> None:
     """Назначить или удалить ментора сотрудника."""
     employee = build_service().database.update_employee(
         employee_id, mentor_id=mentor_id, set_mentor=True
     )
-    typer.echo(f"Ментор сотрудника #{employee.id}: {employee.mentor_id or 'не назначен'}")
+    typer.echo(
+        f"Ментор сотрудника #{employee.id}: {employee.mentor_id or 'не назначен'}"
+    )
+
 
 @employee_app.command("set-team-lead")
 def set_employee_team_lead(

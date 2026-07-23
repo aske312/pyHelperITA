@@ -6,7 +6,7 @@ from contextlib import contextmanager
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 
-from bot.models import (
+from core.models import (
     Employee,
     ReminderSettings,
     ScheduledNotification,
@@ -85,7 +85,24 @@ CREATE INDEX IF NOT EXISTS idx_team_members_team ON team_members(team_id);CREATE
 );
 CREATE INDEX IF NOT EXISTS idx_vacations_employee_dates
 ON vacations(employee_id, start_date, end_date);
-CREATE TABLE IF NOT EXISTS reminder_settings (
+CREATE TABLE IF NOT EXISTS sick_leaves (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    employee_id INTEGER NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+    start_date TEXT NOT NULL,
+    end_date TEXT,
+    document_file_id TEXT,
+    created_at TEXT NOT NULL,
+    closed_at TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_sick_leaves_active
+ON sick_leaves(employee_id) WHERE end_date IS NULL;
+CREATE TABLE IF NOT EXISTS day_offs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    employee_id INTEGER NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+    day_date TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(employee_id, day_date)
+);CREATE TABLE IF NOT EXISTS reminder_settings (
     employee_id INTEGER PRIMARY KEY REFERENCES employees(id) ON DELETE CASCADE,
     days_before INTEGER NOT NULL DEFAULT 7 CHECK (days_before >= 0),
     reminder_time TEXT NOT NULL DEFAULT '09:00',
@@ -414,6 +431,7 @@ class Database:
         last_name: str | None,
         *,
         is_owner: bool = False,
+        role_if_new: str = "employee",
     ) -> Employee:
         existing = self.get_employee_by_telegram(telegram_user_id)
         with self.connect() as connection:
@@ -433,7 +451,7 @@ class Database:
                         first_name,
                         last_name,
                         f"@{username}" if username else None,
-                        "owner" if is_owner else "employee",
+                        "owner" if is_owner else role_if_new,
                         datetime.now().isoformat(timespec="seconds"),
                     ),
                 )
@@ -1099,6 +1117,213 @@ class Database:
             )
             for row in rows
         ]
+
+    def get_active_sick_leave(self, employee_id: int):
+        with self.connect() as connection:
+            return connection.execute(
+                "SELECT * FROM sick_leaves WHERE employee_id = ? AND end_date IS NULL",
+                (employee_id,),
+            ).fetchone()
+
+    def get_sick_leave(self, sick_leave_id: int):
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM sick_leaves WHERE id = ?", (sick_leave_id,)
+            ).fetchone()
+        if row is None:
+            raise LookupError("Больничный не найден")
+        return row
+
+    def list_sick_leaves(self, employee_id: int):
+        with self.connect() as connection:
+            return connection.execute(
+                """SELECT * FROM sick_leaves WHERE employee_id = ?
+                   ORDER BY start_date DESC, id DESC""",
+                (employee_id,),
+            ).fetchall()
+
+    def update_sick_leave_dates(
+        self, sick_leave_id: int, start_date: date, end_date: date | None
+    ) -> None:
+        if end_date is not None and end_date < start_date:
+            raise ValueError("Дата окончания раньше даты начала")
+        with self.connect() as connection:
+            if (
+                connection.execute(
+                    "SELECT 1 FROM sick_leaves WHERE id = ?", (sick_leave_id,)
+                ).fetchone()
+                is None
+            ):
+                raise LookupError("Больничный не найден")
+            connection.execute(
+                "UPDATE sick_leaves SET start_date = ?, end_date = ? WHERE id = ?",
+                (
+                    start_date.isoformat(),
+                    end_date.isoformat() if end_date else None,
+                    sick_leave_id,
+                ),
+            )
+
+    def delete_sick_leave(self, sick_leave_id: int) -> None:
+        with self.connect() as connection:
+            connection.execute("DELETE FROM sick_leaves WHERE id = ?", (sick_leave_id,))
+
+    def open_sick_leave(self, employee_id: int, start_date: date) -> int:
+        if self.get_active_sick_leave(employee_id) is not None:
+            raise ValueError("У сотрудника уже есть активный больничный")
+        with self.connect() as connection:
+            cursor = connection.execute(
+                """INSERT INTO sick_leaves(employee_id, start_date, created_at)
+                   VALUES (?, ?, ?)""",
+                (
+                    employee_id,
+                    start_date.isoformat(),
+                    datetime.now().isoformat(timespec="seconds"),
+                ),
+            )
+            return int(cursor.lastrowid)
+
+    def close_sick_leave(
+        self, sick_leave_id: int, end_date: date, document_file_id: str
+    ) -> None:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT start_date FROM sick_leaves WHERE id = ? AND end_date IS NULL",
+                (sick_leave_id,),
+            ).fetchone()
+            if row is None:
+                raise LookupError("Активный больничный не найден")
+            if end_date < date.fromisoformat(str(row["start_date"])):
+                raise ValueError("Дата окончания раньше даты начала")
+            connection.execute(
+                """UPDATE sick_leaves SET end_date = ?, document_file_id = ?, closed_at = ?
+                   WHERE id = ?""",
+                (
+                    end_date.isoformat(),
+                    document_file_id,
+                    datetime.now().isoformat(timespec="seconds"),
+                    sick_leave_id,
+                ),
+            )
+
+    def add_day_off(self, employee_id: int, day_date: date) -> tuple[int, bool]:
+        with self.connect() as connection:
+            if (
+                connection.execute(
+                    "SELECT 1 FROM day_offs WHERE employee_id = ? AND day_date = ?",
+                    (employee_id, day_date.isoformat()),
+                ).fetchone()
+                is not None
+            ):
+                raise ValueError("DayOff на эту дату уже оформлен")
+            count = int(
+                connection.execute(
+                    """SELECT COUNT(*) FROM day_offs WHERE employee_id = ?
+                   AND substr(day_date, 1, 4) = ?""",
+                    (employee_id, str(day_date.year)),
+                ).fetchone()[0]
+            )
+            if count >= 2:
+                raise ValueError("Лимит DayOff: не более 2 дней в год")
+            adjacent = (
+                connection.execute(
+                    """SELECT 1 FROM day_offs WHERE employee_id = ?
+                   AND (day_date = ? OR day_date = ?)""",
+                    (
+                        employee_id,
+                        (day_date - timedelta(days=1)).isoformat(),
+                        (day_date + timedelta(days=1)).isoformat(),
+                    ),
+                ).fetchone()
+                is not None
+            )
+            cursor = connection.execute(
+                "INSERT INTO day_offs(employee_id, day_date, created_at) VALUES (?, ?, ?)",
+                (
+                    employee_id,
+                    day_date.isoformat(),
+                    datetime.now().isoformat(timespec="seconds"),
+                ),
+            )
+            return int(cursor.lastrowid), adjacent
+
+    def get_day_off(self, day_off_id: int):
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM day_offs WHERE id = ?", (day_off_id,)
+            ).fetchone()
+        if row is None:
+            raise LookupError("DayOff не найден")
+        return row
+
+    def list_day_offs(self, employee_id: int):
+        with self.connect() as connection:
+            return connection.execute(
+                """SELECT * FROM day_offs WHERE employee_id = ?
+                   ORDER BY day_date DESC, id DESC""",
+                (employee_id,),
+            ).fetchall()
+
+    def update_day_off(self, day_off_id: int, day_date: date) -> None:
+        row = self.get_day_off(day_off_id)
+        employee_id = int(row["employee_id"])
+        with self.connect() as connection:
+            duplicate = connection.execute(
+                """SELECT 1 FROM day_offs
+                   WHERE employee_id = ? AND day_date = ? AND id != ?""",
+                (employee_id, day_date.isoformat(), day_off_id),
+            ).fetchone()
+            if duplicate is not None:
+                raise ValueError("DayOff на эту дату уже оформлен")
+            connection.execute(
+                "UPDATE day_offs SET day_date = ? WHERE id = ?",
+                (day_date.isoformat(), day_off_id),
+            )
+
+    def delete_day_off(self, day_off_id: int) -> None:
+        with self.connect() as connection:
+            connection.execute("DELETE FROM day_offs WHERE id = ?", (day_off_id,))
+
+    def employee_presence_status(
+        self, employee_id: int, today: date | None = None
+    ) -> str | None:
+        current = today or date.today()
+        with self.connect() as connection:
+            sick = connection.execute(
+                """SELECT start_date FROM sick_leaves WHERE employee_id = ?
+                   AND start_date <= ? AND (end_date IS NULL OR end_date >= ?)
+                   ORDER BY start_date DESC LIMIT 1""",
+                (employee_id, current.isoformat(), current.isoformat()),
+            ).fetchone()
+            if sick is not None:
+                days = (current - date.fromisoformat(str(sick["start_date"]))).days + 1
+                return f"ILL ({days} дн.)"
+            day_off = connection.execute(
+                "SELECT day_date FROM day_offs WHERE employee_id = ? AND day_date = ?",
+                (employee_id, current.isoformat()),
+            ).fetchone()
+            if day_off is not None:
+                return f"SL ({current:%d.%m.%Y})"
+            vacation = connection.execute(
+                """SELECT start_date, end_date FROM vacations WHERE employee_id = ?
+                   AND start_date <= ? AND end_date >= ? LIMIT 1""",
+                (employee_id, current.isoformat(), current.isoformat()),
+            ).fetchone()
+            if vacation is not None:
+                return f"VAC ({date.fromisoformat(str(vacation['start_date'])):%d.%m}–{date.fromisoformat(str(vacation['end_date'])):%d.%m})"
+        return None
+
+    def list_long_active_sick_leaves(self, today: date):
+        with self.connect() as connection:
+            return connection.execute(
+                """SELECT s.id, s.employee_id, s.start_date, e.full_name,
+                          lead.telegram_user_id AS lead_chat_id
+                   FROM sick_leaves s JOIN employees e ON e.id = s.employee_id
+                   LEFT JOIN employees lead ON lead.id = e.team_lead_id
+                   WHERE s.end_date IS NULL AND date(s.start_date, '+10 days') <= ?
+                     AND lead.telegram_user_id IS NOT NULL""",
+                (today.isoformat(),),
+            ).fetchall()
 
     def add_vacation(
         self, employee_id: int, start_date: date, end_date: date

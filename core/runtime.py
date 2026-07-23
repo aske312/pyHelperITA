@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from bot.config import get_settings
-from bot.db import Database
-from bot.service import VacationService
+from core.config import get_settings
+from core.db import Database
+from core.service import VacationService
 
 
 def build_service() -> VacationService:

@@ -5,7 +5,7 @@ from pathlib import Path
 from xml.sax.saxutils import escape
 from zipfile import ZIP_DEFLATED, ZipFile
 
-from bot.models import VacationView
+from core.models import VacationView
 
 
 def _cell(reference: str, value: object) -> str:

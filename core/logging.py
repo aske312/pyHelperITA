@@ -14,10 +14,10 @@ from aiogram import BaseMiddleware, Bot
 from aiogram.methods import TelegramMethod
 from aiogram.types import TelegramObject, Update
 
-from bot.config import Settings
+from core.config import Settings
 
-TECHNICAL_LOGGER = "bot.technical"
-OPERATIONAL_LOGGER = "bot.operations"
+TECHNICAL_LOGGER = "core.technical"
+OPERATIONAL_LOGGER = "core.operations"
 
 
 class JsonFormatter(logging.Formatter):

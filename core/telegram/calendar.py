@@ -15,9 +15,9 @@ from aiogram.types import (
 )
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-from bot.access import ROLE_LABELS, can_assign_roles, can_manage
-from bot.config import Settings
-from bot.service import VacationService
+from core.access import ROLE_LABELS, can_assign_roles, can_manage
+from core.config import Settings
+from core.service import VacationService
 
 MONTHS = (
     "Январь",
@@ -97,6 +97,10 @@ def _vacation_buttons(vacations, *, prefix: str = "editvac"):
 def create_calendar_router(service: VacationService, settings: Settings) -> Router:
     router = Router(name="calendar")
 
+    def employee_label(employee) -> str:
+        status = service.database.employee_presence_status(employee.id)
+        return f"{employee.full_name} · {status}" if status else employee.full_name
+
     def actor(telegram_id: int):
         return service.database.get_employee_by_telegram(telegram_id)
 
@@ -139,8 +143,8 @@ def create_calendar_router(service: VacationService, settings: Settings) -> Rout
             return
         await start_selection(employee.id, False, state, message.answer)
 
-    @router.message(Command("my_vacations"))
-    async def my_vacations(message: Message, state: FSMContext) -> None:
+    @router.message(Command("my_events"))
+    async def my_events(message: Message, state: FSMContext) -> None:
         if message.from_user is None:
             return
         await state.clear()
@@ -149,31 +153,52 @@ def create_calendar_router(service: VacationService, settings: Settings) -> Rout
             await message.answer("Сначала зарегистрируйтесь через /start.")
             return
         vacations = service.database.list_vacations(employee_id=employee.id)
-        if not vacations:
+        sick_leaves = service.database.list_sick_leaves(employee.id)
+        day_offs = service.database.list_day_offs(employee.id)
+        if not vacations and not sick_leaves and not day_offs:
             await message.answer(
-                "🏖 Сохранённых отпусков пока нет. Добавьте первый через /vacation."
+                "📅 Запланированных событий пока нет. Используйте /vacation, /sick_leave или /day_off."
             )
             return
+        items = [
+            (
+                f"🏖 {item.start_date:%d.%m.%Y} — {item.end_date:%d.%m.%Y}",
+                f"vacation_actions:{item.id}",
+            )
+            for item in vacations
+        ]
+        items.extend(
+            (
+                f"🤒 {date.fromisoformat(str(item['start_date'])):%d.%m.%Y}"
+                + (
+                    f" — {date.fromisoformat(str(item['end_date'])):%d.%m.%Y}"
+                    if item["end_date"]
+                    else " — активен"
+                ),
+                f"absence_actions:sick:{item['id']}",
+            )
+            for item in sick_leaves
+        )
+        items.extend(
+            (
+                f"🌿 DayOff · {date.fromisoformat(str(item['day_date'])):%d.%m.%Y}",
+                f"absence_actions:dayoff:{item['id']}",
+            )
+            for item in day_offs
+        )
         await message.answer(
-            "🏖 <b>Мои отпуска</b>\n\nСначала выберите отпуск:",
+            "📅 <b>Мои события</b>\n\nВыберите событие для просмотра, изменения или удаления:",
             parse_mode="HTML",
-            reply_markup=_buttons(
-                [
-                    (
-                        f"{item.start_date:%d.%m.%Y} — {item.end_date:%d.%m.%Y}",
-                        f"vacation_actions:{item.id}",
-                    )
-                    for item in vacations
-                ],
-                1,
-            ),
+            reply_markup=_buttons(items, 1),
         )
 
     @router.callback_query(F.data.startswith("vacation_actions:"))
     async def vacation_actions(query: CallbackQuery) -> None:
         vacation = service.database.get_vacation(int((query.data or "").split(":")[1]))
         employee = actor(query.from_user.id)
-        if employee is None or vacation.employee_id != employee.id:
+        if employee is None or not can_manage(
+            employee, service.database.get_employee(vacation.employee_id)
+        ):
             await query.answer("Недостаточно прав.", show_alert=True)
             return
         await query.message.edit_text(
@@ -246,7 +271,7 @@ def create_calendar_router(service: VacationService, settings: Settings) -> Rout
             await query.answer("Недостаточно прав.", show_alert=True)
             return
         items = [
-            ("Отпуска сотрудника", f"employeevacations:{employee.id}"),
+            ("📅 Все мероприятия", f"staff_events:{employee.id}"),
             ("Добавить отпуск", f"ownervacation:{employee.id}"),
             ("Изменить данные", f"manage_profile:{employee.id}"),
         ]
@@ -268,7 +293,7 @@ def create_calendar_router(service: VacationService, settings: Settings) -> Rout
                 ]
             )
         await query.message.edit_text(
-            f"👤 <b>{employee.full_name}</b>\n"
+            f"👤 <b>{employee_label(employee)}</b>\n"
             f"Роль: <b>{ROLE_LABELS.get(employee.role, employee.role)}</b>\n\n"
             "Выберите нужный раздел и действие:",
             parse_mode="HTML",
@@ -287,7 +312,7 @@ def create_calendar_router(service: VacationService, settings: Settings) -> Rout
             await query.answer("Нельзя удалить владельца продукта.", show_alert=True)
             return
         await query.message.edit_text(
-            f"🗑 Удалить сотрудника <b>{employee.full_name}</b>?\n\n"
+            f"🗑 Удалить сотрудника <b>{employee_label(employee)}</b>?\n\n"
             "Будут удалены профиль, отпуска и связи с командами.",
             parse_mode="HTML",
             reply_markup=_buttons(
@@ -310,7 +335,7 @@ def create_calendar_router(service: VacationService, settings: Settings) -> Rout
         employee = service.database.get_employee(employee_id)
         service.database.delete_employee(employee_id)
         await query.message.edit_text(
-            f"✅ Запись <b>{employee.full_name}</b> удалена.",
+            f"✅ Запись <b>{employee_label(employee)}</b> удалена.",
             parse_mode="HTML",
         )
         await query.answer("Сотрудник удалён")
@@ -323,11 +348,11 @@ def create_calendar_router(service: VacationService, settings: Settings) -> Rout
             return
         _, employee_id, role = (query.data or "").split(":")
         employee = service.database.update_employee(int(employee_id), role=role)
-        from bot.bot import set_employee_command_menu
+        from core.application import set_employee_command_menu
 
         await set_employee_command_menu(query.bot, employee)
         await query.message.edit_text(
-            f"{employee.full_name}\nНовая роль: {ROLE_LABELS[employee.role]}"
+            f"{employee_label(employee)}\nНовая роль: {ROLE_LABELS[employee.role]}"
         )
         await query.answer("Роль обновлена")
 
@@ -341,12 +366,12 @@ def create_calendar_router(service: VacationService, settings: Settings) -> Rout
         employee = service.database.update_employee(
             int(raw_id), is_team_lead=value == "on"
         )
-        from bot.bot import set_employee_command_menu
+        from core.application import set_employee_command_menu
 
         await set_employee_command_menu(query.bot, employee)
         status = "включено" if employee.is_team_lead else "отключено"
         await query.message.edit_text(
-            f"{employee.full_name}\nСвойство тимлида {status}."
+            f"{employee_label(employee)}\nСвойство тимлида {status}."
         )
         await query.answer()
 
@@ -363,7 +388,8 @@ def create_calendar_router(service: VacationService, settings: Settings) -> Rout
             if item.is_team_lead and item.id != employee_id
         ]
         items = [
-            (item.full_name, f"assignlead:{employee_id}:{item.id}") for item in leads
+            (employee_label(item), f"assignlead:{employee_id}:{item.id}")
+            for item in leads
         ]
         items.append(("Без тимлида", f"assignlead:{employee_id}:none"))
         await query.message.edit_text(
@@ -383,7 +409,7 @@ def create_calendar_router(service: VacationService, settings: Settings) -> Rout
             int(raw_employee), team_lead_id=lead_id, set_team_lead=True
         )
         await query.message.edit_text(
-            f"Тимлид для {employee.full_name}: {employee.team_lead_id or 'не назначен'}"
+            f"Тимлид для {employee_label(employee)}: {employee.team_lead_id or 'не назначен'}"
         )
         await query.answer()
 
@@ -401,7 +427,7 @@ def create_calendar_router(service: VacationService, settings: Settings) -> Rout
             if item.id != employee_id and item.role != "guest"
         ]
         items = [
-            (item.full_name, f"assignmentor:{employee_id}:{item.id}")
+            (employee_label(item), f"assignmentor:{employee_id}:{item.id}")
             for item in candidates
         ]
         items.append(("Без ментора", f"assignmentor:{employee_id}:none"))
@@ -423,7 +449,7 @@ def create_calendar_router(service: VacationService, settings: Settings) -> Rout
             target.id, mentor_id=mentor_id, set_mentor=True
         )
         await query.message.edit_text(
-            f"Ментор для {employee.full_name}: {employee.mentor_id or 'не назначен'}"
+            f"Ментор для {employee_label(employee)}: {employee.mentor_id or 'не назначен'}"
         )
         await query.answer()
 
@@ -438,14 +464,14 @@ def create_calendar_router(service: VacationService, settings: Settings) -> Rout
         vacations = service.database.list_vacations(employee_id=employee_id)
         if not vacations:
             await query.message.edit_text(
-                f"{employee.full_name}\nОтпусков нет.",
+                f"{employee_label(employee)}\nОтпусков нет.",
                 reply_markup=_buttons(
                     [("Добавить отпуск", f"ownervacation:{employee.id}")], 1
                 ),
             )
         else:
             await query.message.edit_text(
-                f"{employee.full_name}\nВыберите отпуск:",
+                f"{employee_label(employee)}\nВыберите отпуск:",
                 reply_markup=_vacation_buttons(vacations),
             )
         await query.answer()
@@ -539,7 +565,7 @@ def create_calendar_router(service: VacationService, settings: Settings) -> Rout
             anomaly_text = "\nАномалии: " + "; ".join(anomalies) if anomalies else ""
             await query.bot.send_message(
                 settings.owner_telegram_id,
-                f"{employee.full_name}: отпуск {action} {start:%d.%m.%Y} - {end:%d.%m.%Y}."
+                f"{employee_label(employee)}: отпуск {action} {start:%d.%m.%Y} - {end:%d.%m.%Y}."
                 + anomaly_text,
             )
         await query.answer()

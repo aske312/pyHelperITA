@@ -10,10 +10,10 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-from bot.config import Settings
-from bot.db import format_display_name
-from bot.models import Employee, Team
-from bot.service import VacationService
+from core.config import Settings
+from core.db import format_display_name
+from core.models import Employee, Team
+from core.service import VacationService
 
 
 class TeamForm(StatesGroup):
@@ -33,10 +33,16 @@ def _buttons(items: list[tuple[str, str]], width: int = 1):
     return builder.as_markup()
 
 
-def _team_card(team: Team, members: list[Employee]) -> str:
+def _team_card(
+    team: Team, members: list[Employee], statuses: dict[int, str] | None = None
+) -> str:
+    statuses = statuses or {}
     member_lines = [
         f"{index}. <b>{escape(format_display_name(member.full_name))}</b>"
         f" — {escape(member.grade or 'грейд не указан')}"
+        f" · {escape(statuses[member.id])}"
+        if member.id in statuses
+        else f"{index}. <b>{escape(format_display_name(member.full_name))}</b> — {escape(member.grade or 'грейд не указан')}"
         for index, member in enumerate(members, 1)
     ]
     composition = (
@@ -66,6 +72,9 @@ def create_team_router(service: VacationService, settings: Settings) -> Router:
         if employee.is_team_lead:
             marks.append("⭐ руководитель")
         suffix = f" · {', '.join(marks)}" if marks else ""
+        status = service.database.employee_presence_status(employee.id)
+        if status:
+            suffix += f" · {status}"
         return f"{format_display_name(employee.full_name)}{suffix}"
 
     async def show_employees_panel(message: Message, actor: Employee) -> None:
@@ -89,7 +98,17 @@ def create_team_router(service: VacationService, settings: Settings) -> Router:
             if actor.role == "owner":
                 actions.append(("🗑 Удалить команду", f"delete_team:{team.id}"))
             await message.answer(
-                _team_card(team, members),
+                _team_card(
+                    team,
+                    members,
+                    {
+                        item.id: status
+                        for item in members
+                        if (
+                            status := service.database.employee_presence_status(item.id)
+                        )
+                    },
+                ),
                 parse_mode="HTML",
                 reply_markup=_buttons(actions),
             )
@@ -337,7 +356,7 @@ def create_team_router(service: VacationService, settings: Settings) -> Router:
             await query.answer(str(error), show_alert=True)
             return
         await query.message.edit_text(
-            f"✅ <b>{escape(format_display_name(employee.full_name))}</b> "
+            f"✅ <b>{escape(employee_label(employee))}</b> "
             f"добавлен в команду <b>{escape(team.name)}</b>.",
             parse_mode="HTML",
         )
@@ -351,7 +370,7 @@ def create_team_router(service: VacationService, settings: Settings) -> Router:
                 settings.owner_telegram_id,
                 "⚠️ <b>Сотрудник переведён между командами</b>\n\n"
                 f"Руководитель: {escape(format_display_name(actor.full_name))}\n"
-                f"Сотрудник: {escape(format_display_name(employee.full_name))}\n"
+                f"Сотрудник: {escape(employee_label(employee))}\n"
                 f"Новая команда: {escape(team.name)}",
                 parse_mode="HTML",
             )
@@ -424,7 +443,7 @@ def create_team_router(service: VacationService, settings: Settings) -> Router:
             )
             return
         await query.message.edit_text(
-            f"✅ <b>{escape(format_display_name(employee.full_name))}</b> "
+            f"✅ <b>{escape(employee_label(employee))}</b> "
             f"исключён из команды <b>{escape(team.name)}</b>.",
             parse_mode="HTML",
         )

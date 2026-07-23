@@ -6,12 +6,13 @@ from zipfile import ZipFile
 
 import pytest
 
-from bot.access import can_manage, visible_contacts
-from bot.config import Settings
-from bot.db import Database, format_display_name, validate_full_name
-from bot.export import export_vacations_xlsx
-from bot.reminders import SystemNotificationSender
-from bot.service import VacationService
+from core.access import can_manage, visible_contacts
+from core.config import Settings
+from core.db import Database, format_display_name, validate_full_name
+from core.events import list_events, period_dates
+from core.export import export_vacations_xlsx
+from core.reminders import SystemNotificationSender
+from core.service import VacationService
 
 
 @pytest.fixture
@@ -461,7 +462,7 @@ def test_employee_can_only_belong_to_one_team(service):
 
 
 def test_command_menus_hide_owner_commands(service):
-    from bot.bot import commands_for_employee
+    from core.application import commands_for_employee
 
     employee = service.register_employee("Меню Сотрудника", 4301)
     lead = service.register_employee("Меню Тимлида", 4302)
@@ -481,10 +482,10 @@ def test_command_menus_hide_owner_commands(service):
         "staff",
         "notifications",
         "export",
-        "guest",
         "team_create",
         "delete_team",
     } <= owner_commands
+    assert "guest" not in owner_commands
     assert {"broadcast", "reminder", "employees"}.isdisjoint(owner_commands)
 
 
@@ -581,7 +582,7 @@ class RecordingBot:
 
 
 def test_start_command_menu_helper_exists(service):
-    from bot.bot import set_employee_command_menu
+    from core.application import set_employee_command_menu
 
     employee = service.register_employee("Стартов Проверочный", 8101)
     bot = RecordingBot()
@@ -605,6 +606,7 @@ def test_mandatory_team_lead_notifications(service):
     )
     service.add_vacation(member.id, date(2026, 8, 10), date(2026, 8, 20))
     bot = RecordingBot()
+    service.settings.feature_events = False
     sender = SystemNotificationSender(service.database, service.settings, bot)
 
     sent = asyncio.run(sender.send_due(datetime(2026, 7, 23, 9, 30)))
@@ -632,9 +634,187 @@ def test_birthday_and_probation_wait_until_0930(service):
         employment_date=date(2026, 4, 23),
     )
     bot = RecordingBot()
+    service.settings.feature_events = False
     sender = SystemNotificationSender(service.database, service.settings, bot)
 
     sent = asyncio.run(sender.send_due(datetime(2026, 7, 23, 9, 29)))
 
     assert sent == 0
     assert bot.messages == []
+
+
+def test_event_periods_and_daily_digest(service):
+    lead = service.register_employee("Событийный Руководитель", 8401)
+    member = service.register_employee("Событийный Сотрудник", 8402)
+    service.database.update_employee(lead.id, is_team_lead=True)
+    service.database.update_employee(
+        member.id, team_lead_id=lead.id, set_team_lead=True
+    )
+    service.database.update_profile(
+        member.id,
+        birth_date=date(1992, 7, 23),
+        employment_date=date(2026, 4, 23),
+    )
+    service.add_vacation(member.id, date(2026, 7, 23), date(2026, 7, 30))
+
+    events = list_events(service.database, date(2026, 7, 23), date(2026, 7, 23))
+    assert {item.icon for item in events} == {"🎂", "📋", "🏖"}
+    assert period_dates("week", date(2026, 7, 23))[:2] == (
+        date(2026, 7, 20),
+        date(2026, 7, 26),
+    )
+
+    service.settings.feature_notifications = False
+    service.settings.feature_events = True
+    bot = RecordingBot()
+    sender = SystemNotificationSender(service.database, service.settings, bot)
+    before = asyncio.run(sender.send_due(datetime(2026, 7, 23, 9, 9)))
+    at_time = asyncio.run(sender.send_due(datetime(2026, 7, 23, 9, 10)))
+    repeated = asyncio.run(sender.send_due(datetime(2026, 7, 23, 9, 11)))
+
+    assert before == 0
+    assert at_time == 2
+    assert repeated == 0
+    assert all("События на сегодня" in text for _, text in bot.messages)
+
+
+def test_new_telegram_user_can_be_created_as_guest(service):
+    guest = service.database.upsert_telegram_user(
+        telegram_user_id=8501,
+        username="new_guest",
+        first_name="Новый",
+        last_name="Гость",
+        role_if_new="guest",
+    )
+
+    assert guest.role == "guest"
+    assert guest.profile_completed is False
+
+
+def test_feature_flags_are_loaded_from_config(tmp_path):
+    flags = tmp_path / "features.config"
+    flags.write_text(
+        "ONBOARDING=true\nPROFILES=false\nVACATIONS=true\n"
+        "OWNER_TOOLS=false\nEXPORTS=true\nREMINDERS=true\n"
+        "NOTIFICATIONS=false\nEVENTS=true\n",
+        encoding="utf-8",
+    )
+
+    settings = Settings(feature_config_path=flags)
+
+    assert settings.feature_profiles is False
+    assert settings.feature_owner is False
+    assert settings.feature_notifications is False
+    assert settings.feature_events is True
+
+
+def test_granular_feature_flags_control_commands_and_defaults(tmp_path):
+    flags = tmp_path / "granular.config"
+    flags.write_text(
+        "CMD_CONTACTS=false\nCMD_EVENTS=false\n"
+        "AUTO_DAILY_EVENTS=false\nAUTO_BIRTHDAY_NOTIFICATIONS=false\n"
+        "DEFAULT_GUEST_ACCESS=false\nDEFAULT_SEND_ROLE_GUIDE=false\n"
+        "PROFILE_RELATIONS=false\n",
+        encoding="utf-8",
+    )
+
+    settings = Settings(feature_config_path=flags)
+
+    assert settings.command_enabled("contacts") is False
+    assert settings.command_enabled("events") is False
+    assert settings.command_enabled("help") is True
+    assert settings.auto_daily_events is False
+    assert settings.auto_birthday_notifications is False
+    assert settings.default_guest_access is False
+    assert settings.default_send_role_guide is False
+    assert settings.profile_relations is False
+
+
+def test_owner_team_lead_has_employees_command(service):
+    from core.application import commands_for_employee
+
+    owner = service.register_employee("Владелец Руководитель", 8601)
+    owner = service.database.update_employee(owner.id, role="owner", is_team_lead=True)
+
+    assert "employees" in {item.command for item in commands_for_employee(owner)}
+
+
+def test_detailed_profile_contains_manager_and_mentor(service):
+    from core.telegram.profile import _profile_text
+
+    manager = service.register_employee("Руководитель Профиля", 8701)
+    mentor = service.register_employee("Ментор Профиля", 8702)
+    employee = service.register_employee("Сотрудник Профиля", 8703)
+
+    text = _profile_text(
+        employee,
+        details=True,
+        manager=manager,
+        mentor=mentor,
+        show_relations=True,
+    )
+
+    assert "Руководитель Профиля" in text
+    assert "Ментор Профиля" in text
+
+
+def test_sick_leave_lifecycle_and_status(service):
+    employee = service.register_employee("Больничный Сотрудник", 8801)
+    sick_id = service.database.open_sick_leave(employee.id, date(2026, 7, 10))
+
+    assert (
+        service.database.employee_presence_status(employee.id, date(2026, 7, 23))
+        == "ILL (14 дн.)"
+    )
+    assert len(service.database.list_long_active_sick_leaves(date(2026, 7, 23))) == 0
+
+    service.database.close_sick_leave(sick_id, date(2026, 7, 23), "document-file-id")
+
+    assert service.database.get_active_sick_leave(employee.id) is None
+    assert (
+        service.database.employee_presence_status(employee.id, date(2026, 7, 24))
+        is None
+    )
+
+
+def test_long_sick_leave_anomaly_for_team_lead(service):
+    lead = service.register_employee("Лид Больничного", 8811)
+    employee = service.register_employee("Долгий Больничный", 8812)
+    service.database.update_employee(lead.id, is_team_lead=True)
+    service.database.update_employee(
+        employee.id, team_lead_id=lead.id, set_team_lead=True
+    )
+    service.database.open_sick_leave(employee.id, date(2026, 7, 1))
+
+    rows = service.database.list_long_active_sick_leaves(date(2026, 7, 12))
+
+    assert len(rows) == 1
+    assert int(rows[0]["lead_chat_id"]) == lead.telegram_user_id
+
+
+def test_day_off_limit_consecutive_anomaly_and_status(service):
+    employee = service.register_employee("Дейофф Сотрудник", 8821)
+
+    _, first_anomaly = service.database.add_day_off(employee.id, date(2026, 5, 10))
+    _, second_anomaly = service.database.add_day_off(employee.id, date(2026, 5, 11))
+
+    assert first_anomaly is False
+    assert second_anomaly is True
+    assert (
+        service.database.employee_presence_status(employee.id, date(2026, 5, 11))
+        == "SL (11.05.2026)"
+    )
+    with pytest.raises(ValueError, match="не более 2"):
+        service.database.add_day_off(employee.id, date(2026, 8, 1))
+
+
+def test_presence_status_priority_is_ill_then_dayoff_then_vacation(service):
+    employee = service.register_employee("Статусный Сотрудник", 8831)
+    service.add_vacation(employee.id, date(2026, 9, 1), date(2026, 9, 10))
+    service.database.add_day_off(employee.id, date(2026, 9, 5))
+    service.database.open_sick_leave(employee.id, date(2026, 9, 3))
+
+    assert (
+        service.database.employee_presence_status(employee.id, date(2026, 9, 5))
+        == "ILL (3 дн.)"
+    )
