@@ -58,9 +58,9 @@ install_system_dependencies() {
   fi
 
   printf '  • Устанавливаю системные пакеты: %s\n' "${need_packages[*]}"
-  run_as_root apt-get update -qq
+  run_as_root apt-get update -qq >>"$INSTALL_LOG" 2>&1
   run_as_root env DEBIAN_FRONTEND=noninteractive apt-get install -y \
-    ca-certificates "${need_packages[@]}"
+    ca-certificates "${need_packages[@]}" >>"$INSTALL_LOG" 2>&1
 }
 
 stop_service() {
@@ -131,11 +131,13 @@ if [[ "$ACTION" == off ]]; then
   exit 0
 fi
 
-install_system_dependencies
-
 mkdir -p "$ROOT/.temp" "$ROOT/data" "$ROOT/logs" "$ROOT/backups"
 export TMPDIR="$ROOT/.temp"
 export PIP_CACHE_DIR="$ROOT/.temp/pip-cache"
+INSTALL_LOG="$ROOT/logs/installer.log"
+touch "$INSTALL_LOG"
+
+install_system_dependencies
 
 if [[ ! -x "$VENV/bin/python" ]]; then
   if [[ -e "$VENV" ]]; then
@@ -152,8 +154,10 @@ else
 fi
 
 printf '  • Устанавливаю приложение\n'
-"$VENV/bin/python" -m pip install --quiet --disable-pip-version-check --upgrade pip
-"$VENV/bin/python" -m pip install --quiet --disable-pip-version-check "$ROOT/config"
+"$VENV/bin/python" -m pip install --quiet --disable-pip-version-check \
+  --log "$INSTALL_LOG" --upgrade pip
+"$VENV/bin/python" -m pip install --quiet --disable-pip-version-check \
+  --log "$INSTALL_LOG" "$ROOT/config"
 
 if [[ ! -f "$ROOT/.env" ]]; then
   cp "$ROOT/config/env.example" "$ROOT/.env"
