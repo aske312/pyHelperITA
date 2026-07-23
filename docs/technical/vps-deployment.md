@@ -31,3 +31,9 @@ sudo systemctl status corporate-assistant
 Репозиторий должен находиться в `/opt/corporate-assistant`. Секреты в `.env`
 должны иметь режим `600`. Также следует настроить firewall, обновления ОС и
 внешнее резервное копирование volume с базой.
+
+`deploy.sh` самостоятельно проверяет `python3`, `python3-venv`, `ensurepip`,
+Git и CA-сертификаты. На Debian/Ubuntu отсутствующие пакеты устанавливаются
+через `apt-get`; повторный запуск пропускает уже установленные компоненты.
+Незавершённое `.venv` после ошибки `ensurepip is not available` автоматически
+пересоздаётся.

@@ -10,6 +10,7 @@ $BuildTempPath = Join-Path $ProjectRoot '.tmp'
 $InstallLog = Join-Path $BuildTempPath 'installer.log'
 $TotalSteps = 5
 $CurrentStep = 0
+$PythonCommand = $null
 
 function Write-Banner {
     Clear-Host
@@ -75,8 +76,43 @@ Set-Content -Path $InstallLog -Value '' -Encoding utf8
 Write-Banner
 
 Write-Step 'Checking Python environment'
+if ((Get-Command py -ErrorAction SilentlyContinue) -and
+    ((& py -3 -c "import sys; assert (3,11) <= sys.version_info[:2] < (3,15)" 2>$null) -eq $null) -and
+    ($LASTEXITCODE -eq 0)) {
+    $PythonCommand = { py -3 @args }
+}
+elseif ((Get-Command python -ErrorAction SilentlyContinue) -and
+    ((& python -c "import sys; assert (3,11) <= sys.version_info[:2] < (3,15)" 2>$null) -eq $null) -and
+    ($LASTEXITCODE -eq 0)) {
+    $PythonCommand = { python @args }
+}
+else {
+    Write-Notice 'Compatible Python 3.11-3.14 is not installed'
+    if (Get-Command winget -ErrorAction SilentlyContinue) {
+        Invoke-Hidden {
+            winget install --id Python.Python.3.13 --exact --silent `
+                --accept-package-agreements --accept-source-agreements
+        } 'winget install Python 3.13' 'Unable to install Python automatically.'
+        $env:Path = [Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' +
+            [Environment]::GetEnvironmentVariable('Path', 'User')
+        $PythonCommand = { py -3.13 @args }
+    }
+    else {
+        Stop-Installer 'Install Python 3.11-3.14 or install winget, then run setup again.'
+    }
+}
+
 if (-not (Test-Path $PythonPath)) {
-    Invoke-Hidden { py -3.14 -m venv $VenvPath } 'py -3.14 -m venv .venv' 'Unable to create the virtual environment.'
+    if (Test-Path $VenvPath) {
+        $ResolvedVenv = [System.IO.Path]::GetFullPath($VenvPath)
+        $ExpectedVenv = [System.IO.Path]::GetFullPath((Join-Path $ProjectRoot '.venv'))
+        if ($ResolvedVenv -ne $ExpectedVenv) {
+            Stop-Installer 'Unsafe virtual environment path.'
+        }
+        Remove-Item -LiteralPath $ResolvedVenv -Recurse -Force
+        Write-Notice 'Incomplete virtual environment removed'
+    }
+    Invoke-Hidden { & $PythonCommand -m venv $VenvPath } 'python -m venv .venv' 'Unable to create the virtual environment.'
     Write-Ok 'Virtual environment created'
 } else {
     Write-Ok 'Virtual environment is ready'
