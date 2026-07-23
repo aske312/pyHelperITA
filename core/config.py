@@ -42,6 +42,9 @@ class Settings(BaseSettings):
     feature_events: bool = True
     feature_teams: bool = True
     feature_absences: bool = True
+    feature_integrations: bool = True
+    feature_mail_integrations: bool = True
+    feature_calendar_integrations: bool = True
     feature_config_path: Path = Path("features.config")
     onboarding_password: str = Field(default="", repr=False)
     daily_events_time: str = "09:10"
@@ -63,6 +66,7 @@ class Settings(BaseSettings):
     command_guest: bool = False
     command_notifications: bool = True
     command_export: bool = True
+    command_integrations: bool = True
     auto_daily_events: bool = True
     auto_birthday_notifications: bool = True
     auto_probation_notifications: bool = True
@@ -94,6 +98,9 @@ class Settings(BaseSettings):
             "EVENTS": "feature_events",
             "TEAMS": "feature_teams",
             "ABSENCES": "feature_absences",
+            "INTEGRATIONS": "feature_integrations",
+            "MAIL_INTEGRATIONS": "feature_mail_integrations",
+            "CALENDAR_INTEGRATIONS": "feature_calendar_integrations",
             "CMD_START": "command_start",
             "CMD_HELP": "command_help",
             "CMD_VACATION": "command_vacation",
@@ -112,6 +119,7 @@ class Settings(BaseSettings):
             "CMD_GUEST": "command_guest",
             "CMD_NOTIFICATIONS": "command_notifications",
             "CMD_EXPORT": "command_export",
+            "CMD_INTEGRATIONS": "command_integrations",
             "AUTO_DAILY_EVENTS": "auto_daily_events",
             "AUTO_BIRTHDAY_NOTIFICATIONS": "auto_birthday_notifications",
             "AUTO_PROBATION_NOTIFICATIONS": "auto_probation_notifications",
@@ -165,6 +173,8 @@ class Settings(BaseSettings):
         return " ".join(value.split())
 
     def command_enabled(self, command: str) -> bool:
+        if command == "integrations" and not self.feature_integrations:
+            return False
         field = {
             "start": "command_start",
             "help": "command_help",
@@ -184,6 +194,7 @@ class Settings(BaseSettings):
             "guest": "command_guest",
             "notifications": "command_notifications",
             "export": "command_export",
+            "integrations": "command_integrations",
         }.get(command)
         return True if field is None else bool(getattr(self, field))
 

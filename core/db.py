@@ -141,6 +141,18 @@ CREATE TABLE IF NOT EXISTS system_notification_log (
     sent_at TEXT NOT NULL,
     PRIMARY KEY (event_type, employee_id, event_key)
 );
+CREATE TABLE IF NOT EXISTS employee_integrations (
+    employee_id INTEGER PRIMARY KEY REFERENCES employees(id) ON DELETE CASCADE,
+    mail_provider TEXT,
+    mail_address TEXT,
+    mail_status TEXT NOT NULL DEFAULT 'disconnected'
+        CHECK (mail_status IN ('disconnected', 'pending', 'connected', 'error')),
+    calendar_provider TEXT,
+    calendar_account TEXT,
+    calendar_status TEXT NOT NULL DEFAULT 'disconnected'
+        CHECK (calendar_status IN ('disconnected', 'pending', 'connected', 'error')),
+    updated_at TEXT NOT NULL
+);
 """
 
 

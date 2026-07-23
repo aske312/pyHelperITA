@@ -16,6 +16,10 @@ from core.db import format_display_name, validate_full_name
 from core.service import VacationService
 
 
+class EmployeeForm(StatesGroup):
+    waiting_name = State()
+
+
 class GuestForm(StatesGroup):
     filling = State()
 
@@ -60,7 +64,8 @@ def create_owner_router(service: VacationService, settings: Settings) -> Router:
             "🗂 <b>Все сотрудники</b>\n\nВыберите запись для полного управления:",
             parse_mode="HTML",
             reply_markup=_buttons(
-                [
+                [("➕ Добавить сотрудника", "employee_add")]
+                + [
                     (
                         f"{'' if item.role == 'owner' else '⭐ ' if item.is_team_lead else ''}"
                         f"{employee_label(item)}",
@@ -71,6 +76,59 @@ def create_owner_router(service: VacationService, settings: Settings) -> Router:
             ),
         )
 
+    async def start_employee_add(message: Message, state: FSMContext) -> None:
+        await state.set_state(EmployeeForm.waiting_name)
+        await message.answer(
+            "➕ <b>Новый сотрудник</b>\n\nВведите ФИО сотрудника. "
+            "Telegram ID можно привязать позже через карточку сотрудника.",
+            parse_mode="HTML",
+        )
+
+    @router.message(Command("employee_add"))
+    async def employee_add_command(message: Message, state: FSMContext) -> None:
+        if message.from_user is None or not is_owner(message.from_user.id):
+            await message.answer("Команда доступна только владельцу продукта.")
+            return
+        raw_name = (message.text or "").split(maxsplit=1)
+        if len(raw_name) == 1:
+            await start_employee_add(message, state)
+            return
+        try:
+            employee = service.register_employee(validate_full_name(raw_name[1]))
+        except ValueError as error:
+            await message.answer(f"Не удалось добавить сотрудника: {escape(str(error))}")
+            return
+        await message.answer(
+            f"✅ <b>Сотрудник создан</b>\n\n"
+            f"ID: <code>{employee.id}</code>\n{escape(employee.full_name)}",
+            parse_mode="HTML",
+        )
+
+    @router.callback_query(F.data == "employee_add")
+    async def employee_add_callback(query: CallbackQuery, state: FSMContext) -> None:
+        if not is_owner(query.from_user.id):
+            await query.answer("Недостаточно прав.", show_alert=True)
+            return
+        await start_employee_add(query.message, state)
+        await query.answer()
+
+    @router.message(EmployeeForm.waiting_name, F.text & ~F.text.startswith("/"))
+    async def employee_add_name(message: Message, state: FSMContext) -> None:
+        if message.from_user is None or not is_owner(message.from_user.id):
+            await state.clear()
+            return
+        try:
+            employee = service.register_employee(validate_full_name(message.text or ""))
+        except ValueError as error:
+            await message.answer(f"Не удалось добавить сотрудника: {escape(str(error))}")
+            return
+        await state.clear()
+        await message.answer(
+            f"✅ <b>Сотрудник создан</b>\n\n"
+            f"ID: <code>{employee.id}</code>\n{escape(employee.full_name)}\n\n"
+            "Откройте /staff, чтобы заполнить профиль и назначить роль.",
+            parse_mode="HTML",
+        )
     @router.message(Command("guest"))
     async def create_guest(message: Message, state: FSMContext) -> None:
         if message.from_user is None:

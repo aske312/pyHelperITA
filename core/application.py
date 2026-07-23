@@ -27,6 +27,7 @@ from core.logging import (
     log_resources,
 )
 from core.instance import single_bot_instance
+from core.integrations.telegram import create_integrations_router
 from core.reminders import NotificationSender, ReminderSender, SystemNotificationSender
 from core.runtime import build_service
 from core.service import VacationService
@@ -50,6 +51,7 @@ BASE_COMMANDS = [
     BotCommand(command="contacts", description="Контакты сотрудников"),
     BotCommand(command="help", description="Доступные команды"),
     BotCommand(command="events", description="События команды"),
+    BotCommand(command="integrations", description="Почта и календарь"),
 ]
 TEAM_LEAD_COMMANDS = BASE_COMMANDS + [
     BotCommand(command="employees", description="Моя команда и сотрудники"),
@@ -58,6 +60,7 @@ TEAM_LEAD_COMMANDS = BASE_COMMANDS + [
 ]
 OWNER_COMMANDS = BASE_COMMANDS + [
     BotCommand(command="staff", description="Все сотрудники"),
+    BotCommand(command="employee_add", description="Добавить сотрудника"),
     BotCommand(command="team_create", description="Создать команду"),
     BotCommand(command="invite_team", description="Пригласить в команду"),
     BotCommand(command="dismiss_team", description="Исключить из команды"),
@@ -68,6 +71,7 @@ OWNER_COMMANDS = BASE_COMMANDS + [
 GUEST_COMMANDS = [
     BotCommand(command="profile", description="Мой профиль"),
     BotCommand(command="help", description="Доступные команды"),
+    BotCommand(command="integrations", description="Почта и календарь"),
 ]
 
 
@@ -251,6 +255,8 @@ async def run_bot() -> None:
         dispatcher.include_router(create_team_router(_service, settings))
     if settings.feature_events:
         dispatcher.include_router(create_events_router(_service, settings))
+    if settings.feature_integrations:
+        dispatcher.include_router(create_integrations_router(_service, settings))
     dispatcher.include_router(router)
     await configure_command_menus(bot, _service)
     sender = ReminderSender(_service.database, settings, bot)
