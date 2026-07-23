@@ -11,11 +11,13 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from core.config import Settings
 from core.integrations.service import IntegrationService
+from core.integrations.secrets import SecretStore
 from core.service import VacationService
 
 
 class IntegrationForm(StatesGroup):
     waiting_value = State()
+    waiting_secret = State()
 
 
 def _buttons(items: list[tuple[str, str]], width: int = 1):
@@ -51,7 +53,8 @@ def _status_text(item) -> str:
 
 def create_integrations_router(service: VacationService, settings: Settings) -> Router:
     router = Router(name="integrations")
-    integrations = IntegrationService(service.database)
+    secret_store = SecretStore(settings.integration_secret_key) if settings.integration_secret_key else None
+    integrations = IntegrationService(service.database, secret_store)
 
     def employee(telegram_id: int):
         return service.database.get_employee_by_telegram(telegram_id)
@@ -102,6 +105,8 @@ def create_integrations_router(service: VacationService, settings: Settings) -> 
             [
                 ("Google Gmail", "google"),
                 ("Microsoft 365", "microsoft"),
+                ("Яндекс Почта", "yandex"),
+                ("Mail.ru", "mailru"),
                 ("SMTP", "smtp"),
             ]
             if kind == "mail"
@@ -157,6 +162,20 @@ def create_integrations_router(service: VacationService, settings: Settings) -> 
             return
         try:
             if kind == "mail":
+                if provider in {"yandex", "mailru", "smtp"}:
+                    if secret_store is None:
+                        await message.answer(
+                            "Сохранение пароля отключено: администратор должен задать "
+                            "INTEGRATION_SECRET_KEY."
+                        )
+                        await state.clear()
+                        return
+                    await state.update_data(integration_address=message.text or "")
+                    await state.set_state(IntegrationForm.waiting_secret)
+                    await message.answer(
+                        "Введите пароль приложения (сообщение будет удалено после обработки):"
+                    )
+                    return
                 item = integrations.configure_mail(
                     current.id, provider, message.text or ""
                 )
@@ -173,6 +192,35 @@ def create_integrations_router(service: VacationService, settings: Settings) -> 
             parse_mode="HTML",
         )
 
+    @router.message(IntegrationForm.waiting_secret, F.text & ~F.text.startswith("/"))
+    async def integration_secret(message: Message, state: FSMContext) -> None:
+        if message.from_user is None:
+            return
+        current = employee(message.from_user.id)
+        data = await state.get_data()
+        try:
+            if current is None:
+                return
+            item = integrations.configure_mail(
+                current.id,
+                str(data.get("integration_provider", "")),
+                str(data.get("integration_address", "")),
+                password=message.text or "",
+            )
+        except ValueError as error:
+            await message.answer(f"Не удалось сохранить: {escape(str(error))}")
+            return
+        finally:
+            try:
+                await message.delete()
+            except Exception:
+                pass
+        await state.clear()
+        await message.answer(
+            "✅ Подключение и зашифрованный пароль сохранены.\n\n" + _status_text(item),
+            parse_mode="HTML",
+        )
+
     @router.callback_query(F.data.startswith("integration_disconnect:"))
     async def integration_disconnect(query: CallbackQuery) -> None:
         current = employee(query.from_user.id)
@@ -182,7 +230,7 @@ def create_integrations_router(service: VacationService, settings: Settings) -> 
         kind = (query.data or "").split(":")[1]
         integrations.disconnect(current.id, kind)
         await query.message.edit_text(
-            "✅ Интеграция отключена. Секреты в локальной базе не хранились."
+            "✅ Интеграция отключена. Связанный зашифрованный секрет удалён."
         )
         await query.answer()
 

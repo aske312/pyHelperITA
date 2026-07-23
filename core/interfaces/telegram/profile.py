@@ -29,7 +29,7 @@ class ProfileForm(StatesGroup):
 
 FORMAT_LABELS = {"hybrid": "Гибрид", "remote": "Удаленка", "office": "Офис"}
 REFERENCE_DIRECTORIES = Directories.load(
-    Path(__file__).resolve().parents[2] / "config" / "directories.json"
+    Path(__file__).resolve().parents[3] / "config" / "directories.json"
 )
 EDITABLE_FIELDS = (
     ("ФИО", "full_name"),

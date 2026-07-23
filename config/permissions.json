@@ -1,0 +1,23 @@
+{
+  "roles": {
+    "guest": {
+      "label": "Гость",
+      "permissions": ["profile.read_self", "profile.update_self", "absence.manage_self", "events.read_self", "integrations.manage_self"]
+    },
+    "employee": {
+      "label": "Сотрудник",
+      "inherits": ["guest"],
+      "permissions": ["contacts.read", "events.read_team"]
+    },
+    "team_lead": {
+      "label": "Тимлид",
+      "inherits": ["employee"],
+      "permissions": ["employee.manage_team", "team.manage_self", "notifications.manage_team"]
+    },
+    "owner": {
+      "label": "Владелец",
+      "inherits": ["team_lead"],
+      "permissions": ["*"]
+    }
+  }
+}

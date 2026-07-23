@@ -1,0 +1,33 @@
+# Развёртывание на Ubuntu VPS
+
+## Docker Compose
+
+```bash
+sudo apt update
+sudo apt install -y docker.io docker-compose-v2
+cp config/env.example .env
+nano .env
+docker compose -f config/compose.yaml up -d --build
+docker compose -f config/compose.yaml ps
+docker compose -f config/compose.yaml logs -f bot
+```
+
+Контейнер работает от непривилегированного пользователя, имеет healthcheck,
+graceful shutdown и именованные volumes для БД, логов и резервных копий.
+
+## Systemd без Docker
+
+```bash
+chmod +x deploy.sh
+./deploy.sh
+sudo useradd --system --home /opt/corporate-assistant assistant
+sudo chown -R assistant:assistant /opt/corporate-assistant
+sudo cp config/systemd/corporate-assistant.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now corporate-assistant
+sudo systemctl status corporate-assistant
+```
+
+Репозиторий должен находиться в `/opt/corporate-assistant`. Секреты в `.env`
+должны иметь режим `600`. Также следует настроить firewall, обновления ОС и
+внешнее резервное копирование volume с базой.

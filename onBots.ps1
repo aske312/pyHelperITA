@@ -14,10 +14,9 @@ $CurrentStep = 0
 function Write-Banner {
     Clear-Host
     Write-Host ''
-    Write-Host '  ==================================================' -ForegroundColor DarkMagenta
-    Write-Host '     SENLA TEAM ASSISTANT' -ForegroundColor Magenta
-    Write-Host '     Environment preparation and launch console' -ForegroundColor DarkGray
-    Write-Host '  ==================================================' -ForegroundColor DarkMagenta
+    Write-Host '  Corporate Assistant' -ForegroundColor Magenta
+    Write-Host '  -------------------' -ForegroundColor DarkMagenta
+    Write-Host '  Setup and launch' -ForegroundColor DarkGray
     Write-Host ''
 }
 
@@ -108,7 +107,7 @@ if (-not (Test-Path $EnvPath)) {
     @(
         'TELEGRAM_BOT_TOKEN='
         'ONBOARDING_PASSWORD='
-        'DATABASE_PATH=data/base.sqlite3'
+        'DATABASE_URL=sqlite:///data/base.sqlite3'
         'APP_TIMEZONE=Europe/Moscow'
         'ADMIN_TELEGRAM_ID='
         'ADMIN_FULL_NAME='
@@ -126,11 +125,11 @@ Write-Ok 'Core and database are ready'
 
 Write-Progress -Activity 'Preparing Senla Team Assistant' -Completed
 Write-Host ''
-Write-Host '  ==================================================' -ForegroundColor Magenta
-Write-Host '     READY TO WORK' -ForegroundColor White -BackgroundColor DarkMagenta
-Write-Host '     Senla Team Assistant is fully prepared.' -ForegroundColor Cyan
-Write-Host '     Core: ready | Database: ready | Config: ready' -ForegroundColor Gray
-Write-Host '  ==================================================' -ForegroundColor Magenta
+Write-Host '  Ready' -ForegroundColor Magenta
+Write-Host '  -----' -ForegroundColor DarkMagenta
+Write-Host '  Core        ready' -ForegroundColor Gray
+Write-Host '  Database    ready' -ForegroundColor Gray
+Write-Host '  Config      ready' -ForegroundColor Gray
 Write-Host ''
 
 if ($RunBot) {

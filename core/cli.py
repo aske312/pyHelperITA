@@ -5,14 +5,16 @@ from pathlib import Path
 
 import typer
 
-from core.application import start_bot
+from core.config import get_settings
+from core.integrations.database import database_description
+from core.interfaces.telegram.application import start_bot
 from core.export import export_vacations_xlsx
 from core.runtime import build_service
 
 app = typer.Typer(help="Корпоративный Telegram-бот помощник", no_args_is_help=True)
 employee_app = typer.Typer(help="Управление сотрудниками", no_args_is_help=True)
 vacation_app = typer.Typer(help="Управление отпусками", no_args_is_help=True)
-database_app = typer.Typer(help="Обслуживание SQLite", no_args_is_help=True)
+database_app = typer.Typer(help="Обслуживание базы данных", no_args_is_help=True)
 app.add_typer(employee_app, name="employee")
 app.add_typer(vacation_app, name="vacation")
 app.add_typer(database_app, name="database")
@@ -29,9 +31,36 @@ def parse_date(value: str) -> date:
 
 @app.command("init")
 def initialize() -> None:
-    """Создать структуру локальной базы данных."""
+    """Подготовить структуру настроенной базы данных."""
     service = build_service()
-    typer.echo(f"База данных готова: {service.settings.database_path}")
+    typer.echo("✓ Система инициализирована")
+    typer.echo(f"  База: {database_description(service.settings.database_url)}")
+
+
+@app.command("doctor")
+def doctor(
+    quiet: bool = typer.Option(False, "--quiet", help="Не выводить успешный результат"),
+) -> None:
+    """Проверить конфигурацию перед запуском."""
+    settings = get_settings()
+    problems: list[str] = []
+    if not settings.telegram_bot_token:
+        problems.append("TELEGRAM_BOT_TOKEN не задан")
+    if settings.feature_onboarding and not settings.onboarding_password:
+        problems.append("ONBOARDING_PASSWORD не задан")
+    try:
+        service = build_service()
+        service.database.connect
+    except Exception as error:
+        problems.append(f"База данных недоступна: {error}")
+    if problems:
+        for problem in problems:
+            typer.echo(f"✗ {problem}", err=True)
+        raise typer.Exit(1)
+    if not quiet:
+        typer.echo("✓ Конфигурация готова")
+        typer.echo(f"  База: {database_description(settings.database_url)}")
+        typer.echo(f"  Часовой пояс: {settings.app_timezone}")
 
 
 @employee_app.command("add")
@@ -150,7 +179,7 @@ def add_vacation(
     start: str = typer.Argument(..., help="Дата начала"),
     end: str = typer.Argument(..., help="Дата окончания"),
 ) -> None:
-    """Добавить отпуск в SQLite."""
+    """Добавить отпуск в настроенную базу данных."""
     service = build_service()
     try:
         vacation = service.add_vacation(employee_id, parse_date(start), parse_date(end))
@@ -193,7 +222,7 @@ def list_vacations(
 
 @vacation_app.command("delete")
 def delete_vacation(vacation_id: int = typer.Argument(..., help="ID отпуска")) -> None:
-    """Удалить отпуск из SQLite."""
+    """Удалить отпуск из настроенной базы данных."""
     service = build_service()
     try:
         service.database.delete_vacation(vacation_id)
@@ -237,7 +266,7 @@ def backup_database(
         None, "--output", "-o", help="Путь к резервной копии"
     ),
 ) -> None:
-    """Создать согласованную резервную копию SQLite."""
+    """Создать согласованную резервную копию базы данных."""
     service = build_service()
     destination = output or Path(
         f"backups/vacations-{datetime.now():%Y%m%d-%H%M%S}.sqlite3"

@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
+from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
 from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from core.features import FEATURES, flag_mapping, validate_dependencies
 
 
 class Settings(BaseSettings):
@@ -21,6 +23,7 @@ class Settings(BaseSettings):
 
     telegram_bot_token: str = ""
     database_path: Path = Path("data/base.sqlite3")
+    database_url: str = ""
     app_timezone: str = "Europe/Moscow"
     owner_telegram_id: int | None = Field(
         default=None,
@@ -45,8 +48,11 @@ class Settings(BaseSettings):
     feature_integrations: bool = True
     feature_mail_integrations: bool = True
     feature_calendar_integrations: bool = True
-    feature_config_path: Path = Path("features.config")
+    strict_feature_dependencies: bool = False
+    feature_config_path: Path = Path("config/features.config")
     directories_path: Path = Path("config/directories.json")
+    permissions_path: Path = Path("config/permissions.json")
+    integration_secret_key: str = Field(default="", repr=False)
     onboarding_password: str = Field(default="", repr=False)
     daily_events_time: str = "09:10"
     command_start: bool = True
@@ -78,8 +84,8 @@ class Settings(BaseSettings):
     default_guest_access: bool = True
     default_send_role_guide: bool = True
     profile_relations: bool = True
-    employee_onboarding_path: Path = Path("docs/onboarding_employee.md")
-    guest_onboarding_path: Path = Path("docs/onboarding_guest.md")
+    employee_onboarding_path: Path = Path("docs/onboarding/employee.md")
+    guest_onboarding_path: Path = Path("docs/onboarding/guest.md")
     operational_logging_enabled: bool = True
     technical_logging_enabled: bool = True
     log_directory: Path = Path("logs")
@@ -92,50 +98,8 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def load_feature_flags(self):
-        mapping = {
-            "ONBOARDING": "feature_onboarding",
-            "PROFILES": "feature_profiles",
-            "VACATIONS": "feature_vacations",
-            "OWNER_TOOLS": "feature_owner",
-            "EXPORTS": "feature_exports",
-            "REMINDERS": "feature_reminders",
-            "NOTIFICATIONS": "feature_notifications",
-            "EVENTS": "feature_events",
-            "TEAMS": "feature_teams",
-            "ABSENCES": "feature_absences",
-            "INTEGRATIONS": "feature_integrations",
-            "MAIL_INTEGRATIONS": "feature_mail_integrations",
-            "CALENDAR_INTEGRATIONS": "feature_calendar_integrations",
-            "CMD_START": "command_start",
-            "CMD_CLEAR": "command_clear",
-            "CMD_HELP": "command_help",
-            "CMD_VACATION": "command_vacation",
-            "CMD_ABSENCE": "command_absence",
-            "CMD_SICK_LEAVE": "command_sick_leave",
-            "CMD_DAY_OFF": "command_day_off",
-            "CMD_MY_EVENTS": "command_my_events",
-            "CMD_PROFILE": "command_profile",
-            "CMD_CONTACTS": "command_contacts",
-            "CMD_EVENTS": "command_events",
-            "CMD_EMPLOYEES": "command_employees",
-            "CMD_INVITE_TEAM": "command_invite_team",
-            "CMD_DISMISS_TEAM": "command_dismiss_team",
-            "CMD_STAFF": "command_staff",
-            "CMD_TEAMS": "command_teams",
-            "CMD_TEAM_CREATE": "command_team_create",
-            "CMD_DELETE_TEAM": "command_delete_team",
-            "CMD_GUEST": "command_guest",
-            "CMD_NOTIFICATIONS": "command_notifications",
-            "CMD_EXPORT": "command_export",
-            "CMD_INTEGRATIONS": "command_integrations",
-            "AUTO_DAILY_EVENTS": "auto_daily_events",
-            "AUTO_BIRTHDAY_NOTIFICATIONS": "auto_birthday_notifications",
-            "AUTO_PROBATION_NOTIFICATIONS": "auto_probation_notifications",
-            "AUTO_VACATION_NOTIFICATIONS": "auto_vacation_notifications",
-            "DEFAULT_GUEST_ACCESS": "default_guest_access",
-            "DEFAULT_SEND_ROLE_GUIDE": "default_send_role_guide",
-            "PROFILE_RELATIONS": "profile_relations",
-        }
+        mapping = flag_mapping()
+        mapping["STRICT_FEATURE_DEPENDENCIES"] = "strict_feature_dependencies"
         path = self.feature_config_path
         if not path.exists():
             return self
@@ -156,6 +120,13 @@ class Settings(BaseSettings):
                     f"{path}:{line_number}: значение должно быть true/false"
                 )
             setattr(self, mapping[key], value == "true")
+        if self.strict_feature_dependencies:
+            validate_dependencies(
+                {
+                    name: bool(getattr(self, feature.setting))
+                    for name, feature in FEATURES.items()
+                }
+            )
         return self
 
     @field_validator("app_timezone")
@@ -163,6 +134,13 @@ class Settings(BaseSettings):
     def validate_timezone(cls, value: str) -> str:
         ZoneInfo(value)
         return value
+
+    @model_validator(mode="after")
+    def resolve_database_url(self):
+        if not self.database_url:
+            normalized = self.database_path.as_posix()
+            self.database_url = f"sqlite:///{quote(normalized)}"
+        return self
 
     @field_validator("default_reminder_time", "daily_events_time")
     @classmethod

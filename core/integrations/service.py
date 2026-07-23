@@ -5,8 +5,9 @@ from datetime import datetime
 
 from core.db import Database
 from core.integrations.models import IntegrationSettings
+from core.integrations.secrets import SecretStore
 
-MAIL_PROVIDERS = {"google", "microsoft", "smtp"}
+MAIL_PROVIDERS = {"google", "microsoft", "yandex", "mailru", "smtp"}
 CALENDAR_PROVIDERS = {"google", "microsoft", "caldav"}
 EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
@@ -14,8 +15,9 @@ EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 class IntegrationService:
     """Управляет персональными настройками; секреты здесь не хранятся."""
 
-    def __init__(self, database: Database):
+    def __init__(self, database: Database, secret_store: SecretStore | None = None):
         self.database = database
+        self.secret_store = secret_store
 
     @staticmethod
     def _from_row(row) -> IntegrationSettings:
@@ -51,7 +53,7 @@ class IntegrationService:
         return self._from_row(row)
 
     def configure_mail(
-        self, employee_id: int, provider: str, address: str
+        self, employee_id: int, provider: str, address: str, password: str | None = None
     ) -> IntegrationSettings:
         provider = provider.strip().lower()
         address = address.strip().lower()
@@ -73,7 +75,28 @@ class IntegrationService:
                     employee_id,
                 ),
             )
+            if password is not None:
+                if self.secret_store is None:
+                    raise ValueError("Хранилище секретов не настроено")
+                connection.execute(
+                    """INSERT INTO integration_secrets(employee_id, kind, secret)
+                       VALUES (?, 'mail', ?)
+                       ON CONFLICT(employee_id, kind) DO UPDATE SET secret=excluded.secret""",
+                    (employee_id, self.secret_store.encrypt(password)),
+                )
         return self.get(employee_id)
+
+    def get_mail_password(self, employee_id: int) -> str | None:
+        with self.database.connect() as connection:
+            row = connection.execute(
+                "SELECT secret FROM integration_secrets "
+                "WHERE employee_id = ? AND kind = 'mail'", (employee_id,)
+            ).fetchone()
+        if row is None:
+            return None
+        if self.secret_store is None:
+            raise ValueError("Хранилище секретов не настроено")
+        return self.secret_store.decrypt(str(row["secret"]))
 
     def configure_calendar(
         self, employee_id: int, provider: str, account: str
@@ -113,6 +136,10 @@ class IntegrationService:
                        WHERE employee_id = ?""",
                     (datetime.now().isoformat(timespec="seconds"), employee_id),
                 )
+                connection.execute(
+                    "DELETE FROM integration_secrets WHERE employee_id = ? AND kind = 'mail'",
+                    (employee_id,),
+                )
             else:
                 connection.execute(
                     """UPDATE employee_integrations
@@ -122,4 +149,3 @@ class IntegrationService:
                     (datetime.now().isoformat(timespec="seconds"), employee_id),
                 )
         return self.get(employee_id)
-

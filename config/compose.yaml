@@ -1,5 +1,6 @@
 services:
   bot:
+    container_name: corporate-assistant
     build:
       context: ..
       dockerfile: config/Dockerfile
@@ -7,6 +8,22 @@ services:
     env_file:
       - ../.env
     volumes:
-      - ../data:/app/data
-      - ../backups:/app/backups
+      - assistant-data:/app/data
+      - assistant-backups:/app/backups
+      - assistant-logs:/app/logs
     command: ["bot"]
+    init: true
+    stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD", "assistant-bot", "doctor", "--quiet"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  assistant-data:
+  assistant-backups:
+  assistant-logs:
