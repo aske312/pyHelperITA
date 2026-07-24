@@ -95,6 +95,7 @@ def create_team_router(service: VacationService, settings: Settings) -> Router:
                 ("➕ Пригласить", f"invite_team:{team.id}"),
                 ("➖ Исключить", f"dismiss_team:{team.id}"),
                 ("🔔 Оповестить команду", f"team_notification:{team.id}"),
+                ("📅 События команды", f"team_events:{team.id}"),
             ]
             if actor.role == "owner":
                 actions.append(("🗑 Удалить команду", f"delete_team:{team.id}"))
@@ -111,7 +112,7 @@ def create_team_router(service: VacationService, settings: Settings) -> Router:
                     },
                 ),
                 parse_mode="HTML",
-                reply_markup=_buttons(actions, back=("← Назад", "ui_close")),
+                reply_markup=_buttons(actions),
             )
 
     async def show_all_teams(message: Message) -> None:
@@ -129,7 +130,7 @@ def create_team_router(service: VacationService, settings: Settings) -> Router:
         await message.answer(
             text,
             parse_mode="HTML",
-            reply_markup=_buttons(items, back=("← Назад", "ui_close")),
+            reply_markup=_buttons(items),
         )
 
     @router.message(Command("teams"))
@@ -180,10 +181,51 @@ def create_team_router(service: VacationService, settings: Settings) -> Router:
                     ("➕ Пригласить", f"invite_team:{team.id}"),
                     ("➖ Исключить", f"dismiss_team:{team.id}"),
                     ("🔔 Оповестить", f"team_notification:{team.id}"),
+                    ("📅 События команды", f"team_events:{team.id}"),
                     ("🗑 Удалить команду", f"delete_team:{team.id}"),
                     ("← Все команды", "teams_back"),
                 ]
             ),
+        )
+        await query.answer()
+
+    @router.callback_query(F.data.startswith("team_view:"))
+    async def team_view(query: CallbackQuery, state: FSMContext) -> None:
+        await state.clear()
+        current = get_actor(query.from_user.id)
+        team = service.database.get_team(int((query.data or "").split(":")[1]))
+        if current is None or (
+            current.role != "owner" and team.lead_id != current.id
+        ):
+            await query.answer("Недостаточно прав.", show_alert=True)
+            return
+        members = service.database.list_team_members(team.id)
+        actions = [
+            ("👤 Действия с сотрудником", f"team_members:{team.id}"),
+            ("➕ Пригласить", f"invite_team:{team.id}"),
+            ("➖ Исключить", f"dismiss_team:{team.id}"),
+            ("🔔 Оповестить команду", f"team_notification:{team.id}"),
+            ("📅 События команды", f"team_events:{team.id}"),
+        ]
+        if current.role == "owner":
+            actions.extend(
+                [
+                    ("🗑 Удалить команду", f"delete_team:{team.id}"),
+                    ("← Все команды", "teams_back"),
+                ]
+            )
+        await query.message.edit_text(
+            _team_card(
+                team,
+                members,
+                {
+                    item.id: status
+                    for item in members
+                    if (status := service.database.employee_presence_status(item.id))
+                },
+            ),
+            parse_mode="HTML",
+            reply_markup=_buttons(actions),
         )
         await query.answer()
 
@@ -207,18 +249,6 @@ def create_team_router(service: VacationService, settings: Settings) -> Router:
         )
         await query.answer()
 
-    @router.message(Command("employees"))
-    async def employees(message: Message) -> None:
-        if message.from_user is None:
-            return
-        actor = get_actor(message.from_user.id)
-        if actor is None or not actor.is_team_lead:
-            await message.answer(
-                "⛔ Управление командой доступно только её руководителю."
-            )
-            return
-        await show_employees_panel(message, actor)
-
     @router.callback_query(F.data.startswith("team_members:"))
     async def team_members(query: CallbackQuery) -> None:
         actor = get_actor(query.from_user.id)
@@ -235,7 +265,11 @@ def create_team_router(service: VacationService, settings: Settings) -> Router:
             "Выберите сотрудника, чтобы открыть доступные действия:",
             parse_mode="HTML",
             reply_markup=_buttons(
-                [(employee_label(item), f"employee:{item.id}") for item in members]
+                [
+                    (employee_label(item), f"employee:{item.id}:{team.id}")
+                    for item in members
+                ]
+                + [("← К команде", f"team_view:{team.id}")]
             ),
         )
         await query.answer()
@@ -253,6 +287,9 @@ def create_team_router(service: VacationService, settings: Settings) -> Router:
             f"🔔 <b>Оповещение команды {escape(team.name)}</b>\n\n"
             "Введите дату и время отправки: <code>ДД.ММ.ГГГГ ЧЧ:ММ</code>",
             parse_mode="HTML",
+            reply_markup=_buttons(
+                [], back=("← К команде", f"team_view:{team.id}")
+            ),
         )
         await query.answer()
 
@@ -271,7 +308,17 @@ def create_team_router(service: VacationService, settings: Settings) -> Router:
             team_notification_at=value.isoformat(timespec="minutes")
         )
         await state.set_state(TeamNotificationForm.waiting_text)
-        await message.answer("Введите текст оповещения для всей команды:")
+        data = await state.get_data()
+        await message.answer(
+            "Введите текст оповещения для всей команды:",
+            reply_markup=_buttons(
+                [],
+                back=(
+                    "← К команде",
+                    f"team_view:{int(data['team_notification_id'])}",
+                ),
+            ),
+        )
 
     @router.message(TeamNotificationForm.waiting_text, F.text & ~F.text.startswith("/"))
     async def team_notification_text(message: Message, state: FSMContext) -> None:
@@ -459,19 +506,9 @@ def create_team_router(service: VacationService, settings: Settings) -> Router:
                     (employee_label(item), f"invite_member:{team.id}:{item.id}")
                     for item in candidates
                 ],
-                back=("← Назад", "ui_close"),
+                back=("← К команде", f"team_view:{team.id}"),
             ),
         )
-
-    @router.message(Command("invite_team"))
-    async def invite_command(message: Message) -> None:
-        if message.from_user is None:
-            return
-        actor = get_actor(message.from_user.id)
-        if actor is None or (actor.role != "owner" and not actor.is_team_lead):
-            await message.answer("Недостаточно прав.")
-            return
-        await start_invite(message, actor)
 
     @router.callback_query(F.data.startswith("invite_team:"))
     async def invite_team(query: CallbackQuery) -> None:
@@ -547,19 +584,9 @@ def create_team_router(service: VacationService, settings: Settings) -> Router:
                     (employee_label(item), f"dismiss_member:{team.id}:{item.id}")
                     for item in members
                 ],
-                back=("← Назад", "ui_close"),
+                back=("← К команде", f"team_view:{team.id}"),
             ),
         )
-
-    @router.message(Command("dismiss_team"))
-    async def dismiss_command(message: Message) -> None:
-        if message.from_user is None:
-            return
-        actor = get_actor(message.from_user.id)
-        if actor is None or (actor.role != "owner" and not actor.is_team_lead):
-            await message.answer("Недостаточно прав.")
-            return
-        await start_dismiss(message, actor)
 
     @router.callback_query(F.data.startswith("dismiss_team:"))
     async def dismiss_team(query: CallbackQuery) -> None:
@@ -627,7 +654,7 @@ def create_team_router(service: VacationService, settings: Settings) -> Router:
             reply_markup=_buttons(
                 [
                     ("Удалить безвозвратно", f"confirm_delete_team:{team.id}"),
-                    ("Отмена", "team_cancel"),
+                    ("← К команде", f"team_view:{team.id}"),
                 ]
             ),
         )
@@ -648,10 +675,5 @@ def create_team_router(service: VacationService, settings: Settings) -> Router:
             parse_mode="HTML",
         )
         await query.answer("Команда удалена")
-
-    @router.callback_query(F.data == "team_cancel")
-    async def team_cancel(query: CallbackQuery) -> None:
-        await query.message.edit_text("Удаление команды отменено.")
-        await query.answer()
 
     return router

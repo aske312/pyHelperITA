@@ -44,20 +44,15 @@ router = Router()
 _service: VacationService | None = None
 
 BASE_COMMANDS = [
-    BotCommand(command="clear", description="Закрыть меню и сбросить ввод"),
     BotCommand(command="absence", description="Оформить отсутствие"),
     BotCommand(command="my_events", description="Мои события: просмотр и управление"),
     BotCommand(command="profile", description="Мой профиль"),
     BotCommand(command="contacts", description="Контакты сотрудников"),
     BotCommand(command="help", description="Доступные команды"),
-    BotCommand(command="events", description="События команды"),
     BotCommand(command="integrations", description="Почта и календарь"),
 ]
 TEAM_LEAD_COMMANDS = BASE_COMMANDS + [
     BotCommand(command="teams", description="Моя команда"),
-    BotCommand(command="employees", description="Моя команда"),
-    BotCommand(command="invite_team", description="Пригласить в команду"),
-    BotCommand(command="dismiss_team", description="Исключить из команды"),
 ]
 OWNER_COMMANDS = BASE_COMMANDS + [
     BotCommand(command="staff", description="Все сотрудники"),
@@ -67,7 +62,6 @@ OWNER_COMMANDS = BASE_COMMANDS + [
     BotCommand(command="export", description="Выгрузить XLSX"),
 ]
 GUEST_COMMANDS = [
-    BotCommand(command="clear", description="Закрыть меню и сбросить ввод"),
     BotCommand(command="absence", description="Оформить отпуск"),
     BotCommand(command="my_events", description="Мои отпуска"),
     BotCommand(command="profile", description="Мой профиль"),
@@ -85,8 +79,6 @@ def get_service() -> VacationService:
 def commands_for_employee(employee) -> list[BotCommand]:
     if employee.role == "owner":
         commands = list(OWNER_COMMANDS)
-        if employee.is_team_lead:
-            commands.append(BotCommand(command="employees", description="Моя команда"))
     elif employee.role == "guest":
         commands = list(GUEST_COMMANDS)
     elif employee.is_team_lead:
@@ -164,23 +156,6 @@ async def help_command(message: Message, state: FSMContext) -> None:
         )
 
 
-@router.message(Command("clear", "cancel"))
-async def clear_command(message: Message, state: FSMContext) -> None:
-    await state.clear()
-    if message.reply_to_message and message.reply_to_message.from_user:
-        if message.reply_to_message.from_user.is_bot:
-            try:
-                await message.bot.delete_message(
-                    message.chat.id, message.reply_to_message.message_id
-                )
-            except Exception:
-                pass
-    try:
-        await message.delete()
-    except Exception:
-        await message.answer("Состояние очищено. Бот ожидает команду.")
-
-
 @router.callback_query(F.data == "ui_close")
 async def close_current_output(query: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
@@ -202,7 +177,6 @@ def _export_buttons(items: list[tuple[str, str]]):
     builder = InlineKeyboardBuilder()
     for text, data in items:
         builder.button(text=text, callback_data=data)
-    builder.button(text="← Назад", callback_data="ui_close")
     builder.button(text="✖️ Закрыть", callback_data="ui_close")
     builder.adjust(2)
     return builder.as_markup()

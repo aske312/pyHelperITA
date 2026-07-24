@@ -144,14 +144,13 @@ def test_profile_fields_and_broadcast_recipients(service):
 
 def test_vacation_anomalies_are_detected(service):
     employee = service.register_employee("Смирнов Сергей Сергеевич", 5678)
-    service.add_vacation(employee.id, date(2027, 6, 1), date(2027, 6, 28))
-    vacation = service.add_vacation(employee.id, date(2027, 7, 3), date(2027, 7, 3))
+    service.add_vacation(employee.id, date(2027, 6, 1), date(2027, 7, 9))
+    vacation = service.add_vacation(employee.id, date(2027, 7, 12), date(2027, 7, 12))
 
     anomalies = service.vacation_anomalies(vacation)
 
-    assert any("суммарно 29" in item for item in anomalies)
+    assert any("суммарно 30 рабочих" in item for item in anomalies)
     assert any("один день" in item for item in anomalies)
-    assert any("выходной" in item for item in anomalies)
 
 
 def test_scheduled_notification_lifecycle(service):
@@ -479,7 +478,10 @@ def test_command_menus_hide_owner_commands(service):
 
     assert {"broadcast", "export", "guest"}.isdisjoint(employee_commands)
     assert {"broadcast", "export", "guest"}.isdisjoint(lead_commands)
-    assert {"employees", "invite_team", "dismiss_team"} <= lead_commands
+    assert {"teams"} <= lead_commands
+    assert {"employees", "invite_team", "dismiss_team", "events", "clear"}.isdisjoint(
+        lead_commands
+    )
     assert {"team", "team_create", "delete_team"}.isdisjoint(lead_commands)
     assert {"staff", "teams", "notifications", "export"} <= owner_commands
     assert {"team_create", "invite_team", "dismiss_team", "delete_team"}.isdisjoint(
@@ -780,13 +782,17 @@ def test_granular_feature_flags_control_commands_and_defaults(tmp_path):
     assert settings.profile_relations is False
 
 
-def test_owner_team_lead_has_employees_command(service):
+def test_owner_team_lead_uses_teams_command(service):
     from core.application import commands_for_employee
 
     owner = service.register_employee("Владелец Руководитель", 8601)
     owner = service.database.update_employee(owner.id, role="owner", is_team_lead=True)
 
-    assert "employees" in {item.command for item in commands_for_employee(owner)}
+    commands = {item.command for item in commands_for_employee(owner)}
+    assert "teams" in commands
+    assert {"employees", "invite_team", "dismiss_team", "events", "clear"}.isdisjoint(
+        commands
+    )
 
 
 def test_detailed_profile_contains_manager_and_mentor(service):

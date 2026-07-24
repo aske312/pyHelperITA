@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from datetime import date, time
+from datetime import date, time, timedelta
 
 from core.config import Settings
 from core.db import Database
 from core.models import Employee, ReminderSettings, Vacation
+from core.holidays import load_holidays
 
 
 class VacationService:
@@ -49,19 +50,33 @@ class VacationService:
         return self.database.add_vacation(employee_id, start_date, end_date)
 
     def vacation_anomalies(self, vacation: Vacation) -> list[str]:
+        holidays = load_holidays(self.settings.russian_holidays_path)
+
+        def working_days(start: date, end: date) -> int:
+            count = 0
+            current = start
+            while current <= end:
+                if current.weekday() < 5 and current not in holidays:
+                    count += 1
+                current += timedelta(days=1)
+            return count
+
         items = self.database.list_vacations(
             employee_id=vacation.employee_id,
             year=vacation.start_date.year,
         )
         anomalies: list[str] = []
-        total_days = sum((item.end_date - item.start_date).days + 1 for item in items)
+        total_days = sum(
+            working_days(item.start_date, item.end_date) for item in items
+        )
         if total_days > 28:
             anomalies.append(
-                f"суммарно {total_days} календарных дней в {vacation.start_date.year} году"
+                f"суммарно {total_days} рабочих дней в {vacation.start_date.year} году"
             )
-        if vacation.days_count > 28:
-            anomalies.append(f"один период длиннее 28 дней: {vacation.days_count}")
-        if vacation.days_count == 1:
+        period_days = working_days(vacation.start_date, vacation.end_date)
+        if period_days > 28:
+            anomalies.append(f"один период длиннее 28 рабочих дней: {period_days}")
+        if period_days == 1:
             anomalies.append("отдельный отпуск на один день")
         if vacation.start_date.weekday() >= 5 or vacation.end_date.weekday() >= 5:
             anomalies.append("граница отпуска приходится на выходной")

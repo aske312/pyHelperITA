@@ -30,7 +30,6 @@ def _date_buttons(prefix: str):
     builder.button(text="Сегодня", callback_data=f"{prefix}:{date.today().isoformat()}")
     tomorrow = date.today() + timedelta(days=1)
     builder.button(text="Завтра", callback_data=f"{prefix}:{tomorrow.isoformat()}")
-    builder.button(text="← Назад", callback_data="ui_close")
     builder.button(text="✖️ Закрыть", callback_data="ui_close")
     builder.adjust(3)
     return builder.as_markup()

@@ -44,7 +44,6 @@ def _buttons(items: list[tuple[str, str]], width: int = 3):
     builder = InlineKeyboardBuilder()
     for text, data in items:
         builder.button(text=text, callback_data=data)
-    builder.button(text="← Назад", callback_data="ui_close")
     builder.button(text="✖️ Закрыть", callback_data="ui_close")
     builder.adjust(width)
     return builder.as_markup()
@@ -90,12 +89,7 @@ def _days(
                 )
             )
         rows.append(row)
-    rows.append(
-        [
-            InlineKeyboardButton(text="← Назад", callback_data="ui_close"),
-            InlineKeyboardButton(text="✖️ Закрыть", callback_data="ui_close"),
-        ]
-    )
+    rows.append([InlineKeyboardButton(text="✖️ Закрыть", callback_data="ui_close")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -293,7 +287,9 @@ def create_calendar_router(service: VacationService, settings: Settings) -> Rout
     @router.callback_query(F.data.startswith("employee:"))
     async def employee_actions(query: CallbackQuery) -> None:
         current_actor = actor(query.from_user.id)
-        employee = service.database.get_employee(int((query.data or "").split(":")[1]))
+        parts = (query.data or "").split(":")
+        employee = service.database.get_employee(int(parts[1]))
+        team_id = int(parts[2]) if len(parts) > 2 else None
         if current_actor is None or not can_manage(current_actor, employee):
             await query.answer("Недостаточно прав.", show_alert=True)
             return
@@ -319,6 +315,8 @@ def create_calendar_router(service: VacationService, settings: Settings) -> Rout
                     ("🗑 Удалить сотрудника", f"delete_employee:{employee.id}"),
                 ]
             )
+        if team_id is not None:
+            items.append(("← К составу команды", f"team_members:{team_id}"))
         await query.message.edit_text(
             f"👤 <b>{employee_label(employee)}</b>\n"
             f"Роль: <b>{ROLE_LABELS.get(employee.role, employee.role)}</b>\n\n"
@@ -345,7 +343,7 @@ def create_calendar_router(service: VacationService, settings: Settings) -> Rout
             reply_markup=_buttons(
                 [
                     ("Удалить безвозвратно", f"confirm_delete_employee:{employee.id}"),
-                    ("Отмена", "calendar_noop"),
+                    ("Отмена", f"employee:{employee.id}"),
                 ],
                 1,
             ),

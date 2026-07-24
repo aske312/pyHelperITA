@@ -30,11 +30,17 @@ def _birthday_in_range(birth_date: date, start: date, end: date) -> date | None:
     return None
 
 
-def list_events(database: Database, start: date, end: date) -> list[CalendarEvent]:
+def list_events(
+    database: Database,
+    start: date,
+    end: date,
+    employee_ids: set[int] | None = None,
+) -> list[CalendarEvent]:
     employees = {
         employee.id: employee
         for employee in database.list_employees()
         if employee.role != "guest"
+        and (employee_ids is None or employee.id in employee_ids)
     }
     events: list[CalendarEvent] = []
     for employee in employees.values():

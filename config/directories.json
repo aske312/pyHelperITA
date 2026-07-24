@@ -1,5 +1,5 @@
 {
-  "offices": ["Тула", "Нижний Новгород", "Орел", "Гродно"],
+  "offices": ["Тула", "Нижний Новгород", "Орел", "Калуга"],
   "english_levels": {
     "A1": "Начальный",
     "A2": "Ниже среднего",
@@ -8,7 +8,7 @@
     "C1": "Продвинутый",
     "C2": "В совершенстве"
   },
-  "grades": ["Intern", "Junior", "Middle", "Senior", "RM1"],
+  "grades": ["Intern", "Junior", "Middle", "Senior"],
   "directions": ["SA", "QA", "AQA", "DEV", "HR"],
   "work_formats": {
     "hybrid": "Гибрид",
