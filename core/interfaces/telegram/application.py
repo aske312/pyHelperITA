@@ -15,6 +15,7 @@ from aiogram.types import (
     FSInputFile,
     Message,
 )
+from aiogram.client.default import DefaultBotProperties
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
@@ -53,6 +54,7 @@ BASE_COMMANDS = [
     BotCommand(command="integrations", description="Почта и календарь"),
 ]
 TEAM_LEAD_COMMANDS = BASE_COMMANDS + [
+    BotCommand(command="teams", description="Моя команда"),
     BotCommand(command="employees", description="Моя команда"),
     BotCommand(command="invite_team", description="Пригласить в команду"),
     BotCommand(command="dismiss_team", description="Исключить из команды"),
@@ -200,6 +202,8 @@ def _export_buttons(items: list[tuple[str, str]]):
     builder = InlineKeyboardBuilder()
     for text, data in items:
         builder.button(text=text, callback_data=data)
+    builder.button(text="← Назад", callback_data="ui_close")
+    builder.button(text="✖️ Закрыть", callback_data="ui_close")
     builder.adjust(2)
     return builder.as_markup()
 
@@ -262,7 +266,12 @@ async def run_bot() -> None:
     configure_logging(settings)
     _service = build_service()
     bot_class = LoggedBot if settings.operational_logging_enabled else Bot
-    bot = bot_class(settings.telegram_bot_token)
+    # All bot output uses Telegram HTML markup. This also keeps scheduled
+    # notifications consistent with interactive forms.
+    bot = bot_class(
+        settings.telegram_bot_token,
+        default=DefaultBotProperties(parse_mode="HTML"),
+    )
     dispatcher = Dispatcher()
     dispatcher.message.outer_middleware(FeatureCommandMiddleware(settings))
     if settings.operational_logging_enabled:

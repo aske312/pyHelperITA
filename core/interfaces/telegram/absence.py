@@ -11,6 +11,7 @@ from aiogram.types import CallbackQuery, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from core.config import Settings
+from core.holidays import load_holidays
 from core.service import VacationService
 
 
@@ -29,6 +30,7 @@ def _date_buttons(prefix: str):
     builder.button(text="Сегодня", callback_data=f"{prefix}:{date.today().isoformat()}")
     tomorrow = date.today() + timedelta(days=1)
     builder.button(text="Завтра", callback_data=f"{prefix}:{tomorrow.isoformat()}")
+    builder.button(text="← Назад", callback_data="ui_close")
     builder.button(text="✖️ Закрыть", callback_data="ui_close")
     builder.adjust(3)
     return builder.as_markup()
@@ -40,6 +42,7 @@ def _parse_date(value: str) -> date:
 
 def create_absence_router(service: VacationService, settings: Settings) -> Router:
     router = Router(name="absence")
+    russian_holidays = load_holidays(settings.russian_holidays_path)
 
     def actor(user_id: int):
         return service.database.get_employee_by_telegram(user_id)
@@ -271,14 +274,18 @@ def create_absence_router(service: VacationService, settings: Settings) -> Route
         bot=None,
     ) -> None:
         employee = actor(user_id or message.from_user.id)
-        if (
-            not date.today() - timedelta(days=30)
-            <= value
-            <= date.today() + timedelta(days=1)
-        ):
+        allowed_dates = {
+            date.today() - timedelta(days=1),
+            date.today(),
+            date.today() + timedelta(days=1),
+        }
+        if value not in allowed_dates:
             await message.answer(
-                "DayOff можно оформить за последние 30 дней, сегодня или на завтра."
+                "DayOff можно оформить только на вчера, сегодня или завтра."
             )
+            return
+        if value.weekday() >= 5 or value in russian_holidays:
+            await message.answer("DayOff нельзя оформить в выходной или праздничный день.")
             return
         try:
             _, anomaly = service.database.add_day_off(employee.id, value)

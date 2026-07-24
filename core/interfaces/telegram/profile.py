@@ -4,6 +4,7 @@ from datetime import date, datetime
 from html import escape
 
 from aiogram import F, Router
+from aiogram.exceptions import TelegramAPIError
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -47,6 +48,21 @@ EDITABLE_FIELDS = (
     ("Боевой проект", "project_name"),
     ("Дата старта проекта", "project_start_date"),
 )
+GUEST_EDITABLE_FIELDS = tuple(
+    item
+    for item in EDITABLE_FIELDS
+    if item[1]
+    in {
+        "full_name",
+        "birth_date",
+        "location",
+        "phone",
+        "personal_email",
+        "direction",
+        "english_level",
+        "work_format",
+    }
+)
 MANAGED_EDITABLE_FIELDS = tuple(
     item
     for item in EDITABLE_FIELDS
@@ -65,6 +81,7 @@ def _buttons(items: list[tuple[str, str]], width: int = 1):
     builder = InlineKeyboardBuilder()
     for text, data in items:
         builder.button(text=text, callback_data=data)
+    builder.button(text="← Назад", callback_data="ui_close")
     builder.button(text="✖️ Закрыть", callback_data="ui_close")
     builder.adjust(width)
     return builder.as_markup()
@@ -74,6 +91,17 @@ def _value(value: object | None, fallback: str = "не указано") -> str:
     return escape(str(value)) if value else f"<i>{fallback}</i>"
 
 
+def _birth_date_in_allowed_age(value: date, today: date | None = None) -> bool:
+    today = today or date.today()
+    try:
+        youngest = date(today.year - 18, today.month, today.day)
+        oldest = date(today.year - 80, today.month, today.day)
+    except ValueError:  # 29 February
+        youngest = date(today.year - 18, today.month, 28)
+        oldest = date(today.year - 80, today.month, 28)
+    return oldest <= value <= youngest
+
+
 def _profile_text(
     profile,
     *,
@@ -81,20 +109,38 @@ def _profile_text(
     public: bool = False,
     manager=None,
     mentor=None,
+    team=None,
     show_relations: bool = False,
     status: str | None = None,
 ) -> str:
     full_title = escape(profile.full_name)
     status_line = f"\n📍 <b>Статус:</b> <code>{escape(status)}</code>" if status else ""
-    short_title = escape(format_display_name(profile.full_name))
     if not details:
+        employment = (
+            f"<code>{profile.employment_date:%d.%m.%Y}</code>"
+            if profile.employment_date
+            else "<i>не указана</i>"
+        )
+        manager_tag = (
+            _value(manager.telegram_tag or manager.full_name)
+            if manager is not None
+            else "<i>не назначен</i>"
+        )
+        mentor_tag = (
+            _value(mentor.telegram_tag or mentor.full_name)
+            if mentor is not None
+            else "<i>не назначен</i>"
+        )
         return (
             f"👤 <b>{full_title}</b>{status_line}\n"
-            f"Кратко: <b>{short_title}</b>\n\n"
-            f"🎯 <b>Грейд:</b> {_value(profile.grade, 'не указан')}\n"
             f"🧭 <b>Направление:</b> {_value(profile.direction)}\n"
+            f"🎯 <b>Грейд:</b> {_value(profile.grade, 'не указан')}\n"
+            f"👥 <b>Команда:</b> {_value(team.name if team else None, 'не назначена')}\n"
+            f"👔 <b>Руководитель:</b> {manager_tag}\n"
+            f"🎓 <b>Ментор:</b> {mentor_tag}\n"
+            f"📅 <b>Дата трудоустройства:</b> {employment}\n"
+            f"📍 <b>Локация:</b> {_value(profile.location, 'не указана')}\n\n"
             f"⚔️ <b>Боевой проект:</b> {_value(profile.project_name, 'не указан')}\n"
-            f"📍 <b>Город:</b> {_value(profile.location, 'не указан')}\n\n"
             f"☎️ <b>Телефон:</b> {_value(profile.phone, 'не указан')}\n"
             f"✉️ <b>Рабочая почта:</b> {_value(profile.email, 'не указана')}\n"
             f"💬 <b>Telegram:</b> {_value(profile.telegram_tag, 'username не задан')}"
@@ -104,11 +150,6 @@ def _profile_text(
         f"🏢 <b>Офис:</b> {_value(profile.office_city, 'не указан')}",
         f"💼 <b>Формат работы:</b> {_value(FORMAT_LABELS.get(profile.work_format), 'не указан')}",
         f"🌐 <b>Английский:</b> {_value(REFERENCE_DIRECTORIES.label_english(profile.english_level))}",
-        (
-            f"📅 <b>Дата трудоустройства:</b> <code>{profile.employment_date:%d.%m.%Y}</code>"
-            if profile.employment_date
-            else "📅 <b>Дата трудоустройства:</b> <i>не указана</i>"
-        ),
         (
             f"🚀 <b>Старт на проекте:</b> <code>{profile.project_start_date:%d.%m.%Y}</code>"
             if profile.project_start_date
@@ -125,13 +166,11 @@ def _profile_text(
         lines.insert(1, f"🎂 <b>Дата рождения:</b> {birthday}")
     if show_relations:
         if manager is not None:
-            lines.append(f"👔 <b>Руководитель:</b> {escape(manager.full_name)}")
-        else:
-            lines.append("👔 <b>Руководитель:</b> <i>не назначен</i>")
+            lines.append(
+                f"👔 <b>ФИО руководителя:</b> {escape(manager.full_name)}"
+            )
         if mentor is not None:
-            lines.append(f"🎓 <b>Ментор:</b> {escape(mentor.full_name)}")
-        else:
-            lines.append("🎓 <b>Ментор:</b> <i>не назначен</i>")
+            lines.append(f"🎓 <b>ФИО ментора:</b> {escape(mentor.full_name)}")
     return "\n".join(lines)
 
 
@@ -141,6 +180,14 @@ def _editor(target_id: int, prefix: str, *, owner: bool = False):
     if owner and prefix == "ownerfield":
         items.append(("ID сотрудника", f"{prefix}:{target_id}:id"))
     return _buttons(items, 2)
+
+
+def _editor_for_actor(target_id: int, actor):
+    fields = GUEST_EDITABLE_FIELDS if actor.role == "guest" else EDITABLE_FIELDS
+    return _buttons(
+        [(label, f"profilefield:{target_id}:{field}") for label, field in fields],
+        2,
+    )
 
 
 def _managed_profile_text(profile) -> str:
@@ -183,9 +230,39 @@ def create_profile_router(service: VacationService) -> Router:
         return service.database.get_employee_by_telegram(telegram_id)
 
     def render_profile(profile, **kwargs) -> str:
+        manager = (
+            service.database.get_employee(profile.team_lead_id)
+            if profile.team_lead_id is not None
+            else None
+        )
+        mentor = (
+            service.database.get_employee(profile.mentor_id)
+            if profile.mentor_id is not None
+            else None
+        )
+        team = next(
+            (
+                item
+                for item in service.database.list_teams()
+                if item.lead_id == profile.id
+                or any(
+                    member.id == profile.id
+                    for member in service.database.list_team_members(item.id)
+                )
+            ),
+            None,
+        )
+        kwargs.setdefault("manager", manager)
+        kwargs.setdefault("mentor", mentor)
+        kwargs.setdefault("team", team)
+        profile_status = (
+            None
+            if kwargs.get("details")
+            else service.database.employee_presence_status(profile.id)
+        )
         return _profile_text(
             profile,
-            status=service.database.employee_presence_status(profile.id),
+            status=profile_status,
             **kwargs,
         )
 
@@ -337,7 +414,7 @@ def create_profile_router(service: VacationService) -> Router:
         await query.message.edit_text(
             "✏️ <b>Редактирование профиля</b>\n\nВыберите поле:",
             parse_mode="HTML",
-            reply_markup=_editor(target_id, "profilefield"),
+            reply_markup=_editor_for_actor(target_id, actor),
         )
         await query.answer()
 
@@ -368,7 +445,14 @@ def create_profile_router(service: VacationService) -> Router:
         target_id = int(raw_id)
         target = service.database.get_employee(target_id)
         allowed_fields = (
-            {item[1] for item in EDITABLE_FIELDS}
+            {
+                item[1]
+                for item in (
+                    GUEST_EDITABLE_FIELDS
+                    if actor is not None and actor.role == "guest"
+                    else EDITABLE_FIELDS
+                )
+            }
             if prefix == "profilefield" and actor is not None and actor.id == target_id
             else {item[1] for item in MANAGED_EDITABLE_FIELDS}
         )
@@ -411,7 +495,7 @@ def create_profile_router(service: VacationService) -> Router:
             "full_name": "Введите ФИО:",
             "birth_date": "Введите дату рождения ДД.ММ.ГГГГ:",
             "phone": "Введите телефон:",
-            "email": "Введите Email:",
+            "email": "Введите рабочий Email:",
             "personal_email": "Введите Email_P:",
             "employment_date": "Введите дату трудоустройства ДД.ММ.ГГГГ:",
             "location": "Введите город:",
@@ -438,6 +522,14 @@ def create_profile_router(service: VacationService) -> Router:
         ):
             await query.answer("Недостаточно прав.", show_alert=True)
             return
+        allowed = (
+            {field for _, field in GUEST_EDITABLE_FIELDS}
+            if actor.role == "guest" and actor.id == target_id
+            else {field for _, field in EDITABLE_FIELDS}
+        )
+        if field not in allowed:
+            await query.answer("Это поле недоступно гостевому профилю.", show_alert=True)
+            return
         await state.set_state(ProfileForm.waiting_value)
         await state.set_data({"target_id": target_id, "profile_field": field})
         await query.message.answer("Введите название проекта:")
@@ -452,6 +544,11 @@ def create_profile_router(service: VacationService) -> Router:
             actor, service.database.get_employee(target_id)
         ):
             await query.answer("Недостаточно прав.", show_alert=True)
+            return
+        if actor.role == "guest" and actor.id == target_id and field not in {
+            item[1] for item in GUEST_EDITABLE_FIELDS
+        }:
+            await query.answer("Это поле недоступно гостевому профилю.", show_alert=True)
             return
         allowed_values = {
             "work_format": set(directories.work_formats),
@@ -500,12 +597,13 @@ def create_profile_router(service: VacationService) -> Router:
                 )
                 return
             kwargs = {field: value}
+            age_warning = False
             if field == "full_name":
                 kwargs[field] = validate_full_name(value)
             elif field in {"birth_date", "project_start_date", "employment_date"}:
                 parsed = datetime.strptime(value, "%d.%m.%Y").date()
-                if field == "birth_date" and parsed >= date.today():
-                    raise ValueError
+                if field == "birth_date":
+                    age_warning = not _birth_date_in_allowed_age(parsed)
                 kwargs[field] = parsed
             elif field == "phone":
                 kwargs[field] = validate_phone(value)
@@ -515,11 +613,30 @@ def create_profile_router(service: VacationService) -> Router:
                 kwargs[field] = validate_city(value, directories)
             elif field == "project_name":
                 kwargs[field] = directories.ensure_allowed_text(value, maximum=200)
-            service.database.update_profile(target_id, **kwargs)
+            updated = service.database.update_profile(target_id, **kwargs)
         except ValueError:
             await message.answer("Некорректное значение. Попробуйте еще раз.")
             return
         await state.clear()
         await message.answer("✅ <b>Данные сотрудника обновлены</b>", parse_mode="HTML")
+        if field == "birth_date" and age_warning:
+            recipients = set()
+            if updated.team_lead_id is not None:
+                lead = service.database.get_employee(updated.team_lead_id)
+                if lead.telegram_user_id is not None:
+                    recipients.add(lead.telegram_user_id)
+            if service.settings.owner_telegram_id is not None:
+                recipients.add(service.settings.owner_telegram_id)
+            warning = (
+                "⚠️ <b>Дата рождения вне стандартного диапазона</b>\n\n"
+                f"Сотрудник: {escape(updated.full_name)}\n"
+                f"Дата: {updated.birth_date:%d.%m.%Y}\n"
+                "Допустимый возраст: от 18 до 80 лет."
+            )
+            for chat_id in recipients:
+                try:
+                    await message.bot.send_message(chat_id, warning, parse_mode="HTML")
+                except TelegramAPIError:
+                    pass
 
     return router

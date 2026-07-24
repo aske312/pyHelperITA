@@ -51,6 +51,7 @@ class Settings(BaseSettings):
     strict_feature_dependencies: bool = False
     feature_config_path: Path = Path("config/features.config")
     directories_path: Path = Path("config/directories.json")
+    russian_holidays_path: Path = Path("config/russian_holidays.json")
     permissions_path: Path = Path("config/permissions.json")
     guides_path: Path = Path("docs/guides")
     integration_secret_key: str = Field(default="", repr=False)

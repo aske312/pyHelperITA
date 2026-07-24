@@ -25,10 +25,14 @@ class TeamNotificationForm(StatesGroup):
     waiting_text = State()
 
 
-def _buttons(items: list[tuple[str, str]], width: int = 1):
+def _buttons(
+    items: list[tuple[str, str]], width: int = 1, back: tuple[str, str] | None = None
+):
     builder = InlineKeyboardBuilder()
     for text, data in items:
         builder.button(text=text, callback_data=data)
+    if back is not None:
+        builder.button(text=back[0], callback_data=back[1])
     builder.button(text="✖️ Закрыть", callback_data="ui_close")
     builder.adjust(width)
     return builder.as_markup()
@@ -107,7 +111,7 @@ def create_team_router(service: VacationService, settings: Settings) -> Router:
                     },
                 ),
                 parse_mode="HTML",
-                reply_markup=_buttons(actions),
+                reply_markup=_buttons(actions, back=("← Назад", "ui_close")),
             )
 
     async def show_all_teams(message: Message) -> None:
@@ -122,17 +126,32 @@ def create_team_router(service: VacationService, settings: Settings) -> Router:
             if teams
             else "👥 <b>Команд пока нет</b>\n\nСоздайте первую команду."
         )
-        await message.answer(text, parse_mode="HTML", reply_markup=_buttons(items))
+        await message.answer(
+            text,
+            parse_mode="HTML",
+            reply_markup=_buttons(items, back=("← Назад", "ui_close")),
+        )
 
     @router.message(Command("teams"))
     async def teams_command(message: Message) -> None:
         if message.from_user is None:
             return
         current = get_actor(message.from_user.id)
-        if current is None or current.role != "owner":
+        if current is None or (current.role != "owner" and not current.is_team_lead):
             await message.answer(
-                "Управление всеми командами доступно только владельцу."
+                "Управление командами доступно только владельцу и тимлидам."
             )
+            return
+        if current.role != "owner":
+            if available_teams(current):
+                await show_employees_panel(message, current)
+            else:
+                await message.answer(
+                    "👥 <b>У вас пока нет своей команды</b>\n\n"
+                    "Создайте команду — она будет автоматически привязана к вам.",
+                    parse_mode="HTML",
+                    reply_markup=_buttons([("➕ Создать свою команду", "teams_create")]),
+                )
             return
         await show_all_teams(message)
 
@@ -312,10 +331,23 @@ def create_team_router(service: VacationService, settings: Settings) -> Router:
         )
 
     @router.callback_query(F.data == "teams_create")
-    async def teams_create(query: CallbackQuery) -> None:
+    async def teams_create(query: CallbackQuery, state: FSMContext) -> None:
         current = get_actor(query.from_user.id)
-        if current is None or current.role != "owner":
+        if current is None or (current.role != "owner" and not current.is_team_lead):
             await query.answer("Недостаточно прав.", show_alert=True)
+            return
+        if current.role != "owner":
+            if available_teams(current):
+                await query.answer("У вас уже есть команда.", show_alert=True)
+                return
+            await state.set_state(TeamForm.waiting_name)
+            await state.set_data({"team_lead_id": current.id})
+            await query.message.edit_text(
+                f"⭐ Руководитель: <b>{escape(format_display_name(current.full_name))}</b>\n\n"
+                "Введите название новой команды:",
+                parse_mode="HTML",
+            )
+            await query.answer()
             return
         leaders = [
             item
@@ -366,11 +398,15 @@ def create_team_router(service: VacationService, settings: Settings) -> Router:
         if message.from_user is None:
             return
         actor = get_actor(message.from_user.id)
-        if actor is None or actor.role != "owner":
+        if actor is None or (actor.role != "owner" and not actor.is_team_lead):
             await state.clear()
             return
         name = (message.text or "").strip()
         data = await state.get_data()
+        lead_id = int(data["team_lead_id"])
+        if actor.role != "owner" and lead_id != actor.id:
+            await state.clear()
+            return
         try:
             team = service.database.create_team(name, int(data["team_lead_id"]))
         except (ValueError, LookupError) as error:
@@ -401,6 +437,7 @@ def create_team_router(service: VacationService, settings: Settings) -> Router:
         message: Message, actor: Employee, team: Team
     ) -> None:
         current_ids = {item.id for item in service.database.list_team_members(team.id)}
+        lead = service.database.get_employee(team.lead_id)
         candidates = [
             item
             for item in service.database.list_employees()
@@ -408,6 +445,8 @@ def create_team_router(service: VacationService, settings: Settings) -> Router:
             and item.id != team.lead_id
             and item.role != "owner"
             and item.role != "guest"
+            and lead.direction is not None
+            and item.direction == lead.direction
         ]
         if not candidates:
             await message.answer("Нет сотрудников, которых можно добавить.")
@@ -419,7 +458,8 @@ def create_team_router(service: VacationService, settings: Settings) -> Router:
                 [
                     (employee_label(item), f"invite_member:{team.id}:{item.id}")
                     for item in candidates
-                ]
+                ],
+                back=("← Назад", "ui_close"),
             ),
         )
 
@@ -506,7 +546,8 @@ def create_team_router(service: VacationService, settings: Settings) -> Router:
                 [
                     (employee_label(item), f"dismiss_member:{team.id}:{item.id}")
                     for item in members
-                ]
+                ],
+                back=("← Назад", "ui_close"),
             ),
         )
 

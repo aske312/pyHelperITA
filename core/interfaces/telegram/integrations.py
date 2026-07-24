@@ -24,6 +24,7 @@ def _buttons(items: list[tuple[str, str]], width: int = 1):
     builder = InlineKeyboardBuilder()
     for text, data in items:
         builder.button(text=text, callback_data=data)
+    builder.button(text="← Назад", callback_data="ui_close")
     builder.button(text="✖️ Закрыть", callback_data="ui_close")
     builder.adjust(width)
     return builder.as_markup()

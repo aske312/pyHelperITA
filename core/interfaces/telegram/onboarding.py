@@ -25,6 +25,7 @@ def _buttons(items: list[tuple[str, str]], width: int = 3):
     builder = InlineKeyboardBuilder()
     for text, data in items:
         builder.button(text=text, callback_data=data)
+    builder.button(text="← Назад", callback_data="ui_close")
     builder.button(text="✖️ Закрыть", callback_data="ui_close")
     builder.adjust(width)
     return builder.as_markup()
@@ -44,6 +45,11 @@ def create_onboarding_router(service: VacationService, settings: Settings) -> Ro
         elif not profile.location:
             await state.set_state(Onboarding.waiting_for_location)
             await send("Введите город:")
+        elif profile.role == "guest":
+            # Guest profiles may fill the remaining permitted fields later
+            # from /profile; onboarding must not request restricted fields.
+            await state.clear()
+            await send(f"Профиль оформлен, {profile.full_name}.")
         elif profile.grade is None:
             await state.clear()
             await send(

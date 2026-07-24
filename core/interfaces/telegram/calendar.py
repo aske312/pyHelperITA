@@ -18,6 +18,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from core.access import ROLE_LABELS, can_assign_roles, can_manage
 from core.config import Settings
 from core.service import VacationService
+from core.holidays import holidays_between, load_holidays
 
 MONTHS = (
     "Январь",
@@ -43,6 +44,7 @@ def _buttons(items: list[tuple[str, str]], width: int = 3):
     builder = InlineKeyboardBuilder()
     for text, data in items:
         builder.button(text=text, callback_data=data)
+    builder.button(text="← Назад", callback_data="ui_close")
     builder.button(text="✖️ Закрыть", callback_data="ui_close")
     builder.adjust(width)
     return builder.as_markup()
@@ -52,7 +54,15 @@ def _months(year: int, prefix: str, first: int = 1):
     return _buttons([(MONTHS[m - 1], f"{prefix}:{year}:{m}") for m in range(first, 13)])
 
 
-def _days(year: int, month: int, prefix: str, minimum: date | None = None):
+def _days(
+    year: int,
+    month: int,
+    prefix: str,
+    minimum: date | None = None,
+    holidays: dict[date, str] | None = None,
+    blocked_weekends: bool = True,
+):
+    holidays = holidays or {}
     rows = [
         [
             InlineKeyboardButton(text=name, callback_data="calendar_noop")
@@ -68,8 +78,9 @@ def _days(year: int, month: int, prefix: str, minimum: date | None = None):
                 )
                 continue
             value = date(year, month, day)
-            enabled = minimum is None or value >= minimum
-            label = f"*{day}" if weekday >= 5 else str(day)
+            blocked = (blocked_weekends and weekday >= 5) or value in holidays
+            enabled = (minimum is None or value >= minimum) and not blocked
+            label = f"🎉{day}" if value in holidays else f"*{day}" if weekday >= 5 else str(day)
             row.append(
                 InlineKeyboardButton(
                     text=label if enabled else f".{day}",
@@ -79,7 +90,12 @@ def _days(year: int, month: int, prefix: str, minimum: date | None = None):
                 )
             )
         rows.append(row)
-    rows.append([InlineKeyboardButton(text="✖️ Закрыть", callback_data="ui_close")])
+    rows.append(
+        [
+            InlineKeyboardButton(text="← Назад", callback_data="ui_close"),
+            InlineKeyboardButton(text="✖️ Закрыть", callback_data="ui_close"),
+        ]
+    )
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -98,6 +114,7 @@ def _vacation_buttons(vacations, *, prefix: str = "editvac"):
 
 def create_calendar_router(service: VacationService, settings: Settings) -> Router:
     router = Router(name="calendar")
+    russian_holidays = load_holidays(settings.russian_holidays_path)
 
     def employee_label(employee) -> str:
         status = service.database.employee_presence_status(employee.id)
@@ -122,9 +139,7 @@ def create_calendar_router(service: VacationService, settings: Settings) -> Rout
                 "edit_vacation_id": edit_vacation_id,
             }
         )
-        years = (
-            range(current - 5, current + 2) if privileged else (current, current + 1)
-        )
+        years = range(current - 1, current + 2) if privileged else (current, current + 1)
         await send(
             "Выберите год начала отпуска:",
             reply_markup=_buttons([(str(year), f"vyear:{year}") for year in years], 2),
@@ -526,8 +541,8 @@ def create_calendar_router(service: VacationService, settings: Settings) -> Rout
         data = await state.get_data()
         minimum = None if data.get("privileged_mode") else date.today()
         await query.message.edit_text(
-            "Выберите первый день:",
-            reply_markup=_days(int(year_value), int(month), "vs", minimum),
+            "Выберите первый день:\n🎉 — праздник, * — выходной",
+            reply_markup=_days(int(year_value), int(month), "vs", minimum, russian_holidays),
         )
         await query.answer()
 
@@ -535,9 +550,13 @@ def create_calendar_router(service: VacationService, settings: Settings) -> Rout
     async def start_day(query: CallbackQuery, state: FSMContext) -> None:
         start = date.fromisoformat((query.data or "").split(":", 1)[1])
         await state.update_data(start_date=start.isoformat())
+        next_month = start.month % 12 + 1
+        next_year = start.year + (1 if start.month == 12 else 0)
+        month_items = [(MONTHS[start.month - 1], f"vem:{start.year}:{start.month}")]
+        month_items.append((MONTHS[next_month - 1], f"vem:{next_year}:{next_month}"))
         await query.message.edit_text(
             f"Начало: {start:%d.%m.%Y}\nВыберите месяц окончания:",
-            reply_markup=_months(start.year, "vem", start.month),
+            reply_markup=_buttons(month_items, 2),
         )
         await query.answer()
 
@@ -545,9 +564,14 @@ def create_calendar_router(service: VacationService, settings: Settings) -> Rout
     async def end_month(query: CallbackQuery, state: FSMContext) -> None:
         _, year_value, month = (query.data or "").split(":")
         start = date.fromisoformat(str((await state.get_data())["start_date"]))
+        requested_month = date(int(year_value), int(month), 1)
+        next_month = date(start.year + (1 if start.month == 12 else 0), start.month % 12 + 1, 1)
+        if requested_month not in {date(start.year, start.month, 1), next_month}:
+            await query.answer("Можно выбрать только месяц начала или следующий месяц.", show_alert=True)
+            return
         await query.message.edit_text(
-            "Выберите последний день:",
-            reply_markup=_days(int(year_value), int(month), "ve", start),
+            "Выберите последний день:\n🎉 — праздник, * — выходной",
+            reply_markup=_days(int(year_value), int(month), "ve", start, russian_holidays),
         )
         await query.answer()
 
@@ -556,6 +580,23 @@ def create_calendar_router(service: VacationService, settings: Settings) -> Rout
         data = await state.get_data()
         start = date.fromisoformat(str(data["start_date"]))
         end = date.fromisoformat((query.data or "").split(":", 1)[1])
+        next_month_end = date(
+            start.year + (1 if start.month == 12 else 0), start.month % 12 + 1, 1
+        )
+        if end.replace(day=1) not in {
+            date(start.year, start.month, 1),
+            next_month_end,
+        }:
+            await query.answer("Дата завершения должна быть в текущем или следующем месяце.", show_alert=True)
+            return
+        if (
+            start.weekday() >= 5
+            or end.weekday() >= 5
+            or start in russian_holidays
+            or end in russian_holidays
+        ):
+            await query.answer("Отпуск нельзя оформлять в выходные или праздничные дни.", show_alert=True)
+            return
         try:
             edit_id = data.get("edit_vacation_id")
             if edit_id:
@@ -570,8 +611,16 @@ def create_calendar_router(service: VacationService, settings: Settings) -> Rout
             await query.answer(str(error), show_alert=True)
             return
         await state.clear()
+        period_holidays = holidays_between(russian_holidays, start, end)
+        holiday_text = (
+            "\n\nПраздничные/перенесённые выходные:\n"
+            + "\n".join(f"• {day:%d.%m.%Y} — {name}" for day, name in period_holidays)
+            if period_holidays
+            else ""
+        )
         await query.message.edit_text(
             f"Отпуск {action}: {start:%d.%m.%Y} - {end:%d.%m.%Y}."
+            + holiday_text
         )
         if settings.owner_telegram_id and not data.get("privileged_mode"):
             anomaly_text = "\nАномалии: " + "; ".join(anomalies) if anomalies else ""
