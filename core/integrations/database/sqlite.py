@@ -35,7 +35,7 @@ CREATE TABLE IF NOT EXISTS employees (
     office_city TEXT,
     work_format TEXT CHECK (work_format IN ('hybrid', 'remote', 'office')),
     grade TEXT CHECK (grade IN ('Intern', 'Junior', 'Middle', 'Senior', 'RM1')),
-    direction TEXT CHECK (direction IN ('SA', 'QA', 'DEV', 'HR')),
+    direction TEXT CHECK (direction IN ('SA', 'QA', 'AQA', 'DEV', 'HR')),
     project_name TEXT,
     project_start_date TEXT,
     profile_completed INTEGER NOT NULL DEFAULT 1 CHECK (profile_completed IN (0, 1)),
@@ -58,7 +58,7 @@ CREATE TABLE IF NOT EXISTS employee_work_profiles (
     office_city TEXT,
     work_format TEXT CHECK (work_format IN ('hybrid', 'remote', 'office')),
     grade TEXT CHECK (grade IN ('Intern', 'Junior', 'Middle', 'Senior', 'RM1')),
-    direction TEXT CHECK (direction IN ('SA', 'QA', 'DEV', 'HR')),
+    direction TEXT CHECK (direction IN ('SA', 'QA', 'AQA', 'DEV', 'HR')),
     project_name TEXT,
     project_start_date TEXT
 );
@@ -221,7 +221,7 @@ class Database:
                 employment_date TEXT, location TEXT, office_city TEXT,
                 work_format TEXT CHECK (work_format IN ('hybrid', 'remote', 'office')),
     grade TEXT CHECK (grade IN ('Intern', 'Junior', 'Middle', 'Senior', 'RM1')),
-    direction TEXT CHECK (direction IN ('SA', 'QA', 'DEV', 'HR')),
+    direction TEXT CHECK (direction IN ('SA', 'QA', 'AQA', 'DEV', 'HR')),
     project_name TEXT,
     project_start_date TEXT,
                 profile_completed INTEGER NOT NULL DEFAULT 1 CHECK (profile_completed IN (0, 1)),
@@ -269,7 +269,7 @@ class Database:
                 employment_date TEXT, location TEXT, office_city TEXT,
                 work_format TEXT CHECK (work_format IN ('hybrid', 'remote', 'office')),
                 grade TEXT CHECK (grade IN ('Intern', 'Junior', 'Middle', 'Senior', 'RM1')),
-                direction TEXT CHECK (direction IN ('SA', 'QA', 'DEV', 'HR')),
+                direction TEXT CHECK (direction IN ('SA', 'QA', 'AQA', 'DEV', 'HR')),
                 project_name TEXT, project_start_date TEXT,
                 profile_completed INTEGER NOT NULL DEFAULT 1 CHECK (profile_completed IN (0, 1)),
                 role TEXT NOT NULL DEFAULT 'employee'
@@ -284,6 +284,60 @@ class Database:
             SELECT id, full_name, telegram_user_id, telegram_username, telegram_first_name, telegram_last_name, telegram_tag, birth_date, phone, email, personal_email, english_level, employment_date, location, office_city, work_format, grade, direction, project_name, project_start_date, profile_completed, role, is_team_lead, team_lead_id, mentor_id, is_active, created_at FROM employees;
             DROP TABLE employees;
             ALTER TABLE employees_guest_new RENAME TO employees;
+            """
+        )
+        connection.execute("PRAGMA foreign_keys = ON")
+
+    @staticmethod
+    def _migrate_aqa_direction(connection: sqlite3.Connection) -> None:
+        row = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'employees'"
+        ).fetchone()
+        if row is None or "'AQA'" in str(row["sql"]):
+            return
+        connection.execute("PRAGMA foreign_keys = OFF")
+        connection.executescript(
+            """
+            DROP TABLE IF EXISTS employees_direction_new;
+            CREATE TABLE employees_direction_new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                full_name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+                telegram_user_id INTEGER UNIQUE,
+                telegram_username TEXT, telegram_first_name TEXT,
+                telegram_last_name TEXT, telegram_tag TEXT, birth_date TEXT,
+                phone TEXT, email TEXT, personal_email TEXT, english_level TEXT,
+                employment_date TEXT, location TEXT, office_city TEXT,
+                work_format TEXT CHECK (work_format IN ('hybrid', 'remote', 'office')),
+                grade TEXT CHECK (grade IN ('Intern', 'Junior', 'Middle', 'Senior', 'RM1')),
+                direction TEXT CHECK (direction IN ('SA', 'QA', 'AQA', 'DEV', 'HR')),
+                project_name TEXT, project_start_date TEXT,
+                profile_completed INTEGER NOT NULL DEFAULT 1 CHECK (profile_completed IN (0, 1)),
+                role TEXT NOT NULL DEFAULT 'employee'
+                    CHECK (role IN ('guest', 'employee', 'owner')),
+                is_team_lead INTEGER NOT NULL DEFAULT 0 CHECK (is_team_lead IN (0, 1)),
+                team_lead_id INTEGER REFERENCES employees_direction_new(id) ON DELETE SET NULL,
+                mentor_id INTEGER REFERENCES employees_direction_new(id) ON DELETE SET NULL,
+                is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
+                created_at TEXT NOT NULL
+            );
+            INSERT INTO employees_direction_new (
+                id, full_name, telegram_user_id, telegram_username,
+                telegram_first_name, telegram_last_name, telegram_tag,
+                birth_date, phone, email, personal_email, english_level,
+                employment_date, location, office_city, work_format, grade,
+                direction, project_name, project_start_date, profile_completed,
+                role, is_team_lead, team_lead_id, mentor_id, is_active, created_at
+            )
+            SELECT
+                id, full_name, telegram_user_id, telegram_username,
+                telegram_first_name, telegram_last_name, telegram_tag,
+                birth_date, phone, email, personal_email, english_level,
+                employment_date, location, office_city, work_format, grade,
+                direction, project_name, project_start_date, profile_completed,
+                role, is_team_lead, team_lead_id, mentor_id, is_active, created_at
+            FROM employees;
+            DROP TABLE employees;
+            ALTER TABLE employees_direction_new RENAME TO employees;
             """
         )
         connection.execute("PRAGMA foreign_keys = ON")
@@ -366,6 +420,7 @@ class Database:
                         f"ALTER TABLE employees ADD COLUMN {name} {definition}"
                     )
             self._migrate_guest_role(connection)
+            self._migrate_aqa_direction(connection)
             columns = {
                 row["name"]
                 for row in connection.execute("PRAGMA table_info(employees)")
@@ -564,7 +619,7 @@ class Database:
                 raise ValueError("Неизвестный грейд")
             values["grade"] = grade
         if direction is not None:
-            if direction not in {"SA", "QA", "DEV", "HR"}:
+            if direction not in {"SA", "QA", "AQA", "DEV", "HR"}:
                 raise ValueError("Неизвестное направление")
             values["direction"] = direction
         if project_name is not None:
