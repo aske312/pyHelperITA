@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from zoneinfo import ZoneInfo
 
 from aiogram import F, Bot, Dispatcher, Router
 from aiogram import BaseMiddleware
@@ -30,6 +32,10 @@ from core.logging import (
 from core.instance import single_bot_instance
 from core.interfaces.telegram.integrations import create_integrations_router
 from core.reminders import NotificationSender, ReminderSender, SystemNotificationSender
+from core.integrations.caldav import CalendarSyncService
+from core.integrations.mail import MailConnectionSyncService
+from core.integrations.secrets import SecretStore
+from core.integrations.service import IntegrationService
 from core.runtime import build_service
 from core.service import VacationService
 from core.interfaces.telegram.absence import create_absence_router
@@ -274,6 +280,31 @@ async def run_bot() -> None:
         _service.database, settings, bot
     )
     scheduler = AsyncIOScheduler(timezone=settings.app_timezone)
+    if settings.feature_calendar_integrations and settings.integration_secret_key:
+        calendar_sync = CalendarSyncService(
+            _service.database, SecretStore(settings.integration_secret_key)
+        )
+        scheduler.add_job(
+            calendar_sync.sync_all,
+            "interval",
+            minutes=15,
+            max_instances=1,
+            coalesce=True,
+            next_run_time=datetime.now(ZoneInfo(settings.app_timezone)),
+        )
+    if settings.feature_mail_integrations and settings.integration_secret_key:
+        integration_service = IntegrationService(
+            _service.database, SecretStore(settings.integration_secret_key)
+        )
+        mail_sync = MailConnectionSyncService(_service.database, integration_service)
+        scheduler.add_job(
+            mail_sync.sync_all,
+            "interval",
+            minutes=15,
+            max_instances=1,
+            coalesce=True,
+            next_run_time=datetime.now(ZoneInfo(settings.app_timezone)),
+        )
     if settings.feature_reminders:
         scheduler.add_job(
             sender.send_due, "interval", minutes=1, max_instances=1, coalesce=True

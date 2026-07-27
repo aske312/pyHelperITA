@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from calendar import monthrange
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 from core.db import Database
 
@@ -81,6 +81,25 @@ def list_events(
                     "🏁",
                     f"Окончание отпуска: {vacation.employee_name}",
                 )
+            )
+    return sorted(events, key=lambda item: (item.event_date, item.text))
+
+
+def list_personal_calendar_events(
+    database: Database, employee_id: int, start: date, end: date
+) -> list[CalendarEvent]:
+    with database.connect() as connection:
+        rows = connection.execute(
+            "SELECT title, starts_at, all_day FROM calendar_events WHERE employee_id = ?",
+            (employee_id,),
+        ).fetchall()
+    events = []
+    for row in rows:
+        starts_at = datetime.fromisoformat(str(row["starts_at"]))
+        if start <= starts_at.date() <= end:
+            prefix = "" if row["all_day"] else f"{starts_at:%H:%M} · "
+            events.append(
+                CalendarEvent(starts_at.date(), "🗓", prefix + str(row["title"]))
             )
     return sorted(events, key=lambda item: (item.event_date, item.text))
 

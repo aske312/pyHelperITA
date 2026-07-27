@@ -28,6 +28,7 @@ class IntegrationService:
             mail_status=str(row["mail_status"]),
             calendar_provider=row["calendar_provider"],
             calendar_account=row["calendar_account"],
+            calendar_username=row["calendar_username"],
             calendar_status=str(row["calendar_status"]),
             updated_at=datetime.fromisoformat(str(row["updated_at"])),
         )
@@ -90,7 +91,8 @@ class IntegrationService:
         with self.database.connect() as connection:
             row = connection.execute(
                 "SELECT secret FROM integration_secrets "
-                "WHERE employee_id = ? AND kind = 'mail'", (employee_id,)
+                "WHERE employee_id = ? AND kind = 'mail'",
+                (employee_id,),
             ).fetchone()
         if row is None:
             return None
@@ -99,7 +101,13 @@ class IntegrationService:
         return self.secret_store.decrypt(str(row["secret"]))
 
     def configure_calendar(
-        self, employee_id: int, provider: str, account: str
+        self,
+        employee_id: int,
+        provider: str,
+        account: str,
+        *,
+        username: str | None = None,
+        password: str | None = None,
     ) -> IntegrationSettings:
         provider = provider.strip().lower()
         account = account.strip()
@@ -107,21 +115,48 @@ class IntegrationService:
             raise ValueError("Неизвестный календарный провайдер")
         if not account:
             raise ValueError("Укажите аккаунт или адрес календаря")
+        if provider == "caldav" and not account.startswith("https://"):
+            raise ValueError("CalDAV URL должен начинаться с https://")
+        if password is not None and self.secret_store is None:
+            raise ValueError("Хранилище секретов не настроено")
         self.get(employee_id)
         with self.database.connect() as connection:
             connection.execute(
                 """UPDATE employee_integrations
                    SET calendar_provider = ?, calendar_account = ?,
-                       calendar_status = 'pending', updated_at = ?
+                       calendar_username = ?, calendar_status = 'pending', updated_at = ?
                    WHERE employee_id = ?""",
                 (
                     provider,
                     account,
+                    username.strip() if username else None,
                     datetime.now().isoformat(timespec="seconds"),
                     employee_id,
                 ),
             )
+            if password is not None:
+                connection.execute(
+                    """INSERT INTO integration_secrets(employee_id, kind, secret)
+                       VALUES (?, 'calendar', ?)
+                       ON CONFLICT(employee_id, kind) DO UPDATE SET secret=excluded.secret""",
+                    (employee_id, self.secret_store.encrypt(password)),
+                )
         return self.get(employee_id)
+
+    def get_calendar_password(self, employee_id: int) -> str | None:
+        return self._get_password(employee_id, "calendar")
+
+    def _get_password(self, employee_id: int, kind: str) -> str | None:
+        with self.database.connect() as connection:
+            row = connection.execute(
+                "SELECT secret FROM integration_secrets WHERE employee_id = ? AND kind = ?",
+                (employee_id, kind),
+            ).fetchone()
+        if row is None:
+            return None
+        if self.secret_store is None:
+            raise ValueError("Хранилище секретов не настроено")
+        return self.secret_store.decrypt(str(row["secret"]))
 
     def disconnect(self, employee_id: int, kind: str) -> IntegrationSettings:
         if kind not in {"mail", "calendar"}:
@@ -144,8 +179,16 @@ class IntegrationService:
                 connection.execute(
                     """UPDATE employee_integrations
                        SET calendar_provider = NULL, calendar_account = NULL,
+                           calendar_username = NULL,
                            calendar_status = 'disconnected', updated_at = ?
                        WHERE employee_id = ?""",
                     (datetime.now().isoformat(timespec="seconds"), employee_id),
+                )
+                connection.execute(
+                    "DELETE FROM integration_secrets WHERE employee_id = ? AND kind = 'calendar'",
+                    (employee_id,),
+                )
+                connection.execute(
+                    "DELETE FROM calendar_events WHERE employee_id = ?", (employee_id,)
                 )
         return self.get(employee_id)

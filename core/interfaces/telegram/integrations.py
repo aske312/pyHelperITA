@@ -17,6 +17,7 @@ from core.service import VacationService
 
 class IntegrationForm(StatesGroup):
     waiting_value = State()
+    waiting_calendar_username = State()
     waiting_secret = State()
 
 
@@ -53,7 +54,11 @@ def _status_text(item) -> str:
 
 def create_integrations_router(service: VacationService, settings: Settings) -> Router:
     router = Router(name="integrations")
-    secret_store = SecretStore(settings.integration_secret_key) if settings.integration_secret_key else None
+    secret_store = (
+        SecretStore(settings.integration_secret_key)
+        if settings.integration_secret_key
+        else None
+    )
     integrations = IntegrationService(service.database, secret_store)
 
     def employee(telegram_id: int):
@@ -180,6 +185,17 @@ def create_integrations_router(service: VacationService, settings: Settings) -> 
                     current.id, provider, message.text or ""
                 )
             else:
+                if provider == "caldav":
+                    if secret_store is None:
+                        await message.answer(
+                            "Сохранение пароля отключено: задайте INTEGRATION_SECRET_KEY."
+                        )
+                        await state.clear()
+                        return
+                    await state.update_data(integration_address=message.text or "")
+                    await state.set_state(IntegrationForm.waiting_calendar_username)
+                    await message.answer("Введите логин CalDAV:")
+                    return
                 item = integrations.configure_calendar(
                     current.id, provider, message.text or ""
                 )
@@ -192,6 +208,16 @@ def create_integrations_router(service: VacationService, settings: Settings) -> 
             parse_mode="HTML",
         )
 
+    @router.message(
+        IntegrationForm.waiting_calendar_username, F.text & ~F.text.startswith("/")
+    )
+    async def calendar_username(message: Message, state: FSMContext) -> None:
+        await state.update_data(integration_username=message.text or "")
+        await state.set_state(IntegrationForm.waiting_secret)
+        await message.answer(
+            "Введите пароль приложения CalDAV (сообщение будет удалено):"
+        )
+
     @router.message(IntegrationForm.waiting_secret, F.text & ~F.text.startswith("/"))
     async def integration_secret(message: Message, state: FSMContext) -> None:
         if message.from_user is None:
@@ -201,12 +227,21 @@ def create_integrations_router(service: VacationService, settings: Settings) -> 
         try:
             if current is None:
                 return
-            item = integrations.configure_mail(
-                current.id,
-                str(data.get("integration_provider", "")),
-                str(data.get("integration_address", "")),
-                password=message.text or "",
-            )
+            if data.get("integration_kind") == "calendar":
+                item = integrations.configure_calendar(
+                    current.id,
+                    "caldav",
+                    str(data.get("integration_address", "")),
+                    username=str(data.get("integration_username", "")),
+                    password=message.text or "",
+                )
+            else:
+                item = integrations.configure_mail(
+                    current.id,
+                    str(data.get("integration_provider", "")),
+                    str(data.get("integration_address", "")),
+                    password=message.text or "",
+                )
         except ValueError as error:
             await message.answer(f"Не удалось сохранить: {escape(str(error))}")
             return

@@ -14,6 +14,6 @@ class IntegrationSettings:
     mail_status: str
     calendar_provider: str | None
     calendar_account: str | None
+    calendar_username: str | None
     calendar_status: str
     updated_at: datetime
-

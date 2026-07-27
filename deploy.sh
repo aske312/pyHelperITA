@@ -4,6 +4,8 @@ set -Eeuo pipefail
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 VENV="$ROOT/.venv"
 ACTION=setup
+REMOTE_URL="${DEPLOY_REMOTE_URL:-https://github.com/aske312/pyHelperITA.git}"
+REMOTE_BRANCH="${DEPLOY_BRANCH:-main}"
 SERVICE_NAME=corporate-assistant
 SERVICE_FILE="/etc/systemd/system/$SERVICE_NAME.service"
 
@@ -61,6 +63,21 @@ install_system_dependencies() {
   run_as_root apt-get update -qq >>"$INSTALL_LOG" 2>&1
   run_as_root env DEBIAN_FRONTEND=noninteractive apt-get install -y \
     ca-certificates "${need_packages[@]}" >>"$INSTALL_LOG" 2>&1
+}
+
+update_repository() {
+  if [[ ! -d "$ROOT/.git" ]]; then
+    printf '  ! Каталог не является git-репозиторием — обновление пропущено\n'
+    return
+  fi
+  if [[ -n "$(git -C "$ROOT" status --porcelain --untracked-files=no)" ]]; then
+    printf '  ✗ Есть локальные изменения. Обновление остановлено, данные не затронуты.\n'
+    exit 1
+  fi
+  printf '  • Получаю новую версию из %s (%s)\n' "$REMOTE_URL" "$REMOTE_BRANCH"
+  git -C "$ROOT" remote set-url origin "$REMOTE_URL"
+  git -C "$ROOT" fetch --prune origin "$REMOTE_BRANCH"
+  git -C "$ROOT" merge --ff-only "origin/$REMOTE_BRANCH"
 }
 
 stop_service() {
@@ -138,6 +155,7 @@ INSTALL_LOG="$ROOT/logs/installer.log"
 touch "$INSTALL_LOG"
 
 install_system_dependencies
+update_repository
 
 if [[ ! -x "$VENV/bin/python" ]]; then
   if [[ -e "$VENV" ]]; then

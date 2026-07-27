@@ -9,7 +9,7 @@ from aiogram.exceptions import TelegramAPIError
 
 from core.config import Settings
 from core.db import Database
-from core.events import format_events, list_events
+from core.events import format_events, list_events, list_personal_calendar_events
 
 
 class ReminderSender:
@@ -122,9 +122,7 @@ class SystemNotificationSender:
             and current.time().replace(tzinfo=None)
             >= time.fromisoformat(self.settings.daily_events_time)
         ):
-            daily_text = format_events(
-                list_events(self.database, today, today), "События на сегодня"
-            )
+            company_events = list_events(self.database, today, today)
             for recipient in self.database.list_employees():
                 if (
                     recipient.role == "guest"
@@ -132,6 +130,13 @@ class SystemNotificationSender:
                     or recipient.telegram_user_id is None
                 ):
                     continue
+                daily_text = format_events(
+                    company_events
+                    + list_personal_calendar_events(
+                        self.database, recipient.id, today, today
+                    ),
+                    "События на сегодня",
+                )
                 sent += await self._send_once(
                     recipient.telegram_user_id,
                     daily_text,

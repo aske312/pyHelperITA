@@ -149,6 +149,7 @@ CREATE TABLE IF NOT EXISTS employee_integrations (
         CHECK (mail_status IN ('disconnected', 'pending', 'connected', 'error')),
     calendar_provider TEXT,
     calendar_account TEXT,
+    calendar_username TEXT,
     calendar_status TEXT NOT NULL DEFAULT 'disconnected'
         CHECK (calendar_status IN ('disconnected', 'pending', 'connected', 'error')),
     updated_at TEXT NOT NULL
@@ -159,6 +160,20 @@ CREATE TABLE IF NOT EXISTS integration_secrets (
     secret TEXT NOT NULL,
     PRIMARY KEY (employee_id, kind)
 );
+CREATE TABLE IF NOT EXISTS calendar_events (
+    employee_id INTEGER NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+    external_uid TEXT NOT NULL,
+    recurrence_id TEXT NOT NULL DEFAULT '',
+    title TEXT NOT NULL,
+    starts_at TEXT NOT NULL,
+    ends_at TEXT,
+    all_day INTEGER NOT NULL DEFAULT 0,
+    source_url TEXT,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (employee_id, external_uid, recurrence_id)
+);
+CREATE INDEX IF NOT EXISTS idx_calendar_events_employee_start
+ON calendar_events(employee_id, starts_at);
 """
 
 
@@ -487,6 +502,16 @@ class Database:
                 connection.execute(
                     "ALTER TABLE scheduled_notifications ADD COLUMN recipient_roles "
                     "TEXT NOT NULL DEFAULT 'owner,team_lead,employee'"
+                )
+            integration_columns = {
+                row["name"]
+                for row in connection.execute(
+                    "PRAGMA table_info(employee_integrations)"
+                )
+            }
+            if "calendar_username" not in integration_columns:
+                connection.execute(
+                    "ALTER TABLE employee_integrations ADD COLUMN calendar_username TEXT"
                 )
 
     def upsert_telegram_user(
