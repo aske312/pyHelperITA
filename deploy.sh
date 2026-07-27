@@ -130,7 +130,8 @@ EOF
   run_as_root install -m 0644 "$unit_tmp" "$SERVICE_FILE"
   rm -f -- "$unit_tmp"
   run_as_root systemctl daemon-reload
-  run_as_root systemctl enable --now "$SERVICE_NAME.service"
+  run_as_root systemctl enable "$SERVICE_NAME.service"
+  run_as_root systemctl restart "$SERVICE_NAME.service"
   if ! run_as_root systemctl is-active --quiet "$SERVICE_NAME.service"; then
     printf '  ✗ Сервис не запустился. Последние сообщения:\n'
     run_as_root journalctl -u "$SERVICE_NAME.service" -n 30 --no-pager
