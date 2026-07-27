@@ -52,6 +52,7 @@ _service: VacationService | None = None
 BASE_COMMANDS = [
     BotCommand(command="absence", description="Оформить отсутствие"),
     BotCommand(command="my_events", description="Мои события: просмотр и управление"),
+    BotCommand(command="events", description="Запланированные события"),
     BotCommand(command="profile", description="Мой профиль"),
     BotCommand(command="contacts", description="Контакты сотрудников"),
     BotCommand(command="help", description="Доступные команды"),

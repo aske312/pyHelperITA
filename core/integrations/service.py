@@ -100,6 +100,22 @@ class IntegrationService:
             raise ValueError("Хранилище секретов не настроено")
         return self.secret_store.decrypt(str(row["secret"]))
 
+    def set_mail_status(self, employee_id: int, status: str) -> IntegrationSettings:
+        if status not in {"pending", "connected", "error"}:
+            raise ValueError("Некорректный статус почтовой интеграции")
+        with self.database.connect() as connection:
+            connection.execute(
+                """UPDATE employee_integrations
+                   SET mail_status = ?, updated_at = ?
+                   WHERE employee_id = ?""",
+                (
+                    status,
+                    datetime.now().isoformat(timespec="seconds"),
+                    employee_id,
+                ),
+            )
+        return self.get(employee_id)
+
     def configure_calendar(
         self,
         employee_id: int,

@@ -10,6 +10,7 @@ from aiogram.types import CallbackQuery, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from core.config import Settings
+from core.integrations.mail import SMTP_PROVIDERS, SmtpMailGateway
 from core.integrations.service import IntegrationService
 from core.integrations.secrets import SecretStore
 from core.service import VacationService
@@ -242,6 +243,33 @@ def create_integrations_router(service: VacationService, settings: Settings) -> 
                     str(data.get("integration_address", "")),
                     password=message.text or "",
                 )
+                provider = str(data.get("integration_provider", ""))
+                if provider in SMTP_PROVIDERS:
+                    try:
+                        await SmtpMailGateway(
+                            username=str(data.get("integration_address", "")),
+                            password=message.text or "",
+                            provider=provider,
+                        ).send(
+                            recipient=str(data.get("integration_address", "")),
+                            subject="Почта успешно подключена",
+                            body=(
+                                "Почтовая интеграция с корпоративным помощником "
+                                "настроена и работает.\n\n"
+                                "Это автоматическое тестовое письмо. Отвечать на него "
+                                "не нужно."
+                            ),
+                        )
+                        item = integrations.set_mail_status(current.id, "connected")
+                        await message.answer(
+                            "✅ Почта проверена. Тестовое письмо отправлено на этот же ящик."
+                        )
+                    except Exception:
+                        item = integrations.set_mail_status(current.id, "error")
+                        await message.answer(
+                            "⚠️ Настройки сохранены, но войти в почту или отправить "
+                            "тестовое письмо не удалось. Проверьте пароль приложения."
+                        )
         except ValueError as error:
             await message.answer(f"Не удалось сохранить: {escape(str(error))}")
             return

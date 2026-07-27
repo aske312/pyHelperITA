@@ -55,8 +55,8 @@ def create_events_router(service: VacationService, settings: Settings) -> Router
         if message.from_user is None:
             return
         employee = actor(message.from_user.id)
-        if employee is None or employee.role != "owner":
-            await message.answer("Прямой просмотр всех событий доступен владельцу.")
+        if employee is None or employee.role == "guest" or not employee.is_active:
+            await message.answer("Просмотр запланированных событий доступен сотрудникам.")
             return
         await message.answer(
             "📅 <b>Запланированные события</b>\n\nВыберите период:",
@@ -67,7 +67,7 @@ def create_events_router(service: VacationService, settings: Settings) -> Router
     @router.callback_query(F.data.startswith("events_period:"))
     async def global_events_period(query: CallbackQuery) -> None:
         employee = actor(query.from_user.id)
-        if employee is None or employee.role != "owner":
+        if employee is None or employee.role == "guest" or not employee.is_active:
             await query.answer("Недостаточно прав.", show_alert=True)
             return
         period = (query.data or "").split(":")[1]

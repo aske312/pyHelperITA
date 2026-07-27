@@ -478,8 +478,11 @@ def test_command_menus_hide_owner_commands(service):
 
     assert {"broadcast", "export", "guest"}.isdisjoint(employee_commands)
     assert {"broadcast", "export", "guest"}.isdisjoint(lead_commands)
+    assert "events" in employee_commands
+    assert "events" in lead_commands
+    assert "events" in owner_commands
     assert {"teams"} <= lead_commands
-    assert {"employees", "invite_team", "dismiss_team", "events", "clear"}.isdisjoint(
+    assert {"employees", "invite_team", "dismiss_team", "clear"}.isdisjoint(
         lead_commands
     )
     assert {"team", "team_create", "delete_team"}.isdisjoint(lead_commands)
@@ -790,7 +793,8 @@ def test_owner_team_lead_uses_teams_command(service):
 
     commands = {item.command for item in commands_for_employee(owner)}
     assert "teams" in commands
-    assert {"employees", "invite_team", "dismiss_team", "events", "clear"}.isdisjoint(
+    assert "events" in commands
+    assert {"employees", "invite_team", "dismiss_team", "clear"}.isdisjoint(
         commands
     )
 

@@ -57,6 +57,19 @@ def test_integrations_do_not_store_credentials(service):
     assert "refresh_token" not in columns
 
 
+def test_mail_connection_status_can_be_updated(service):
+    employee = service.register_employee("Почтовый Сотрудник", 9903)
+    integrations = IntegrationService(service.database)
+    integrations.configure_mail(employee.id, "yandex", "mail@example.com")
+
+    connected = integrations.set_mail_status(employee.id, "connected")
+
+    assert connected.mail_status == "connected"
+
+    with pytest.raises(ValueError):
+        integrations.set_mail_status(employee.id, "unknown")
+
+
 def test_integration_feature_flags(tmp_path):
     flags = tmp_path / "features.config"
     flags.write_text(
