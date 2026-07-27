@@ -10,7 +10,7 @@ from aiogram.types import CallbackQuery, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from core.config import Settings
-from core.integrations.mail import SMTP_PROVIDERS, SmtpMailGateway
+from core.integrations.mail import SMTP_PROVIDERS, SmtpMailGateway, smtp_username
 from core.integrations.service import IntegrationService
 from core.integrations.secrets import SecretStore
 from core.service import VacationService
@@ -113,6 +113,7 @@ def create_integrations_router(service: VacationService, settings: Settings) -> 
                 ("Microsoft 365", "microsoft"),
                 ("Яндекс Почта", "yandex"),
                 ("Mail.ru", "mailru"),
+                ("SENLA Mail", "senla"),
                 ("SMTP", "smtp"),
             ]
             if kind == "mail"
@@ -168,7 +169,7 @@ def create_integrations_router(service: VacationService, settings: Settings) -> 
             return
         try:
             if kind == "mail":
-                if provider in {"yandex", "mailru", "smtp"}:
+                if provider in {"yandex", "mailru", "senla", "smtp"}:
                     if secret_store is None:
                         await message.answer(
                             "Сохранение пароля отключено: администратор должен задать "
@@ -247,7 +248,9 @@ def create_integrations_router(service: VacationService, settings: Settings) -> 
                 if provider in SMTP_PROVIDERS:
                     try:
                         await SmtpMailGateway(
-                            username=str(data.get("integration_address", "")),
+                            username=smtp_username(
+                                str(data.get("integration_address", "")), provider
+                            ),
                             password=message.text or "",
                             provider=provider,
                         ).send(

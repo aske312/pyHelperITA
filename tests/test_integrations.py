@@ -4,6 +4,7 @@ import pytest
 
 from core.config import Settings
 from core.db import Database
+from core.integrations.mail import smtp_username
 from core.integrations.service import IntegrationService
 from core.service import VacationService
 
@@ -68,6 +69,21 @@ def test_mail_connection_status_can_be_updated(service):
 
     with pytest.raises(ValueError):
         integrations.set_mail_status(employee.id, "unknown")
+
+
+def test_senla_mail_uses_thunderbird_namespace_login(service):
+    employee = service.register_employee("SENLA Сотрудник", 9904)
+    integrations = IntegrationService(service.database)
+
+    configured = integrations.configure_mail(
+        employee.id, "senla", "sergei_lisin@senla.eu"
+    )
+
+    assert configured.mail_provider == "senla"
+    assert (
+        smtp_username(configured.mail_address, configured.mail_provider)
+        == "sergei_lisin@senla.eu@thunderbird"
+    )
 
 
 def test_integration_feature_flags(tmp_path):

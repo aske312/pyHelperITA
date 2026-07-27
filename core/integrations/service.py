@@ -7,7 +7,7 @@ from core.db import Database
 from core.integrations.models import IntegrationSettings
 from core.integrations.secrets import SecretStore
 
-MAIL_PROVIDERS = {"google", "microsoft", "yandex", "mailru", "smtp"}
+MAIL_PROVIDERS = {"google", "microsoft", "yandex", "mailru", "senla", "smtp"}
 CALENDAR_PROVIDERS = {"google", "microsoft", "caldav"}
 EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 

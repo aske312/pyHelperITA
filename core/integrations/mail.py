@@ -19,7 +19,13 @@ SMTP_PROVIDERS = {
     "mailru": SmtpProvider("smtp.mail.ru"),
     "google": SmtpProvider("smtp.gmail.com"),
     "microsoft": SmtpProvider("smtp.office365.com", 587, False),
+    "senla": SmtpProvider("mail.senla.eu"),
 }
+
+
+def smtp_username(address: str, provider: str) -> str:
+    """Return the authentication login, which may differ from the mailbox address."""
+    return f"{address}@thunderbird" if provider == "senla" else address
 
 
 class SmtpMailGateway:
@@ -83,7 +89,7 @@ class MailConnectionSyncService:
         with self.database.connect() as connection:
             rows = connection.execute(
                 "SELECT employee_id, mail_provider, mail_address FROM employee_integrations "
-                "WHERE mail_provider IN ('google', 'microsoft', 'yandex', 'mailru') "
+                "WHERE mail_provider IN ('google', 'microsoft', 'yandex', 'mailru', 'senla') "
                 "AND mail_address IS NOT NULL"
             ).fetchall()
         connected = 0
@@ -94,7 +100,9 @@ class MailConnectionSyncService:
                 continue
             try:
                 await SmtpMailGateway(
-                    username=str(row["mail_address"]),
+                    username=smtp_username(
+                        str(row["mail_address"]), str(row["mail_provider"])
+                    ),
                     password=password,
                     provider=str(row["mail_provider"]),
                 ).verify()
