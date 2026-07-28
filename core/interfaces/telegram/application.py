@@ -44,12 +44,14 @@ from core.interfaces.telegram.events import create_events_router
 from core.interfaces.telegram.onboarding import create_onboarding_router
 from core.interfaces.telegram.owner import create_owner_router
 from core.interfaces.telegram.profile import create_profile_router
+from core.interfaces.telegram.reminder_settings import create_reminder_settings_router
 from core.interfaces.telegram.team import create_team_router
 
 router = Router()
 _service: VacationService | None = None
 
 BASE_COMMANDS = [
+    BotCommand(command="reminders", description="Мои напоминания"),
     BotCommand(command="absence", description="Оформить отсутствие"),
     BotCommand(command="my_events", description="Мои события: просмотр и управление"),
     BotCommand(command="events", description="Запланированные события"),
@@ -69,6 +71,7 @@ OWNER_COMMANDS = BASE_COMMANDS + [
     BotCommand(command="export", description="Выгрузить XLSX"),
 ]
 GUEST_COMMANDS = [
+    BotCommand(command="reminders", description="Мои напоминания"),
     BotCommand(command="absence", description="Оформить отпуск"),
     BotCommand(command="my_events", description="Мои отпуска"),
     BotCommand(command="profile", description="Мой профиль"),
@@ -271,6 +274,8 @@ async def run_bot() -> None:
         dispatcher.include_router(create_team_router(_service, settings))
     if settings.feature_events:
         dispatcher.include_router(create_events_router(_service, settings))
+    if settings.feature_reminders:
+        dispatcher.include_router(create_reminder_settings_router(_service, settings))
     if settings.feature_integrations:
         dispatcher.include_router(create_integrations_router(_service, settings))
     dispatcher.include_router(router)

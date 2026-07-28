@@ -77,6 +77,7 @@ class Settings(BaseSettings):
     command_delete_team: bool = True
     command_guest: bool = False
     command_notifications: bool = True
+    command_reminders: bool = True
     command_export: bool = True
     command_integrations: bool = True
     auto_daily_events: bool = True
@@ -185,6 +186,7 @@ class Settings(BaseSettings):
             "delete_team": "command_delete_team",
             "guest": "command_guest",
             "notifications": "command_notifications",
+            "reminders": "command_reminders",
             "export": "command_export",
             "integrations": "command_integrations",
         }.get(command)

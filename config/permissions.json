@@ -2,7 +2,7 @@
   "roles": {
     "guest": {
       "label": "Гость",
-      "permissions": ["profile.read_self", "profile.update_self", "absence.manage_self", "events.read_self", "integrations.manage_self"]
+      "permissions": ["profile.read_self", "profile.update_self", "absence.manage_self", "events.read_self", "integrations.manage_self", "reminders.manage_self"]
     },
     "employee": {
       "label": "Сотрудник",
@@ -12,7 +12,7 @@
     "team_lead": {
       "label": "Тимлид",
       "inherits": ["employee"],
-      "permissions": ["employee.manage_team", "team.manage_self", "notifications.manage_team"]
+      "permissions": ["employee.manage_team", "team.manage_self", "notifications.manage_team", "reminders.manage_team"]
     },
     "owner": {
       "label": "Владелец",

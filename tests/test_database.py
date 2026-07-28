@@ -491,6 +491,16 @@ def test_command_menus_hide_owner_commands(service):
         owner_commands
     )
     assert {"absence", "my_events", "profile"} <= guest_commands
+    assert all(
+        "reminders" in commands
+        for commands in (
+            employee_commands, lead_commands, owner_commands, guest_commands
+        )
+    )
+    assert all(
+        "notifications" not in commands
+        for commands in (employee_commands, lead_commands, guest_commands)
+    )
     assert {"sick_leave", "day_off", "contacts", "events"}.isdisjoint(guest_commands)
     assert "guest" not in owner_commands
     assert {"broadcast", "reminder", "employees"}.isdisjoint(owner_commands)

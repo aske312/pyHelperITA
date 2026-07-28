@@ -15,30 +15,33 @@ docker compose -f config/compose.yaml logs -f bot
 Контейнер работает от непривилегированного пользователя, имеет healthcheck,
 graceful shutdown и именованные volumes для БД, логов и резервных копий.
 
-## Systemd без Docker
+## Автоматическая установка и запуск через systemd
 
 ```bash
+git clone https://github.com/aske312/pyHelperITA.git
+cd pyHelperITA
 chmod +x deploy.sh
 ./deploy.sh
-sudo useradd --system --home /opt/corporate-assistant assistant
-sudo chown -R assistant:assistant /opt/corporate-assistant
-sudo cp config/systemd/corporate-assistant.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now corporate-assistant
-sudo systemctl status corporate-assistant
+nano .env
+./deploy.sh --run
 ```
 
-Репозиторий должен находиться в `/opt/corporate-assistant`. Секреты в `.env`
-должны иметь режим `600`. Также следует настроить firewall, обновления ОС и
-внешнее резервное копирование volume с базой.
+Скрипт работает из фактического каталога проекта, поэтому размещение в
+`/opt/corporate-assistant` не обязательно. Секреты в `.env` автоматически получают
+режим `600`. Также следует настроить firewall, обновления ОС и внешнее резервное
+копирование базы.
 
-`deploy.sh` самостоятельно проверяет `python3`, `python3-venv`, `ensurepip`,
-Git и CA-сертификаты. На Debian/Ubuntu отсутствующие пакеты устанавливаются
-через `apt-get`; повторный запуск пропускает уже установленные компоненты.
+`deploy.sh` самостоятельно проверяет совместимый Python 3.11–3.14, `venv`,
+`ensurepip`, Git и CA-сертификаты. На Ubuntu отсутствующие пакеты устанавливаются
+через `apt-get`, затем проверяются Python-пакеты и конфигурация. Повторный запуск
+пропускает уже установленные компоненты. Для самой простой установки рекомендуется
+Ubuntu 24.04 LTS; если репозитории ОС не содержат Python 3.11+, скрипт завершится с
+понятной диагностикой и не станет подключать сторонний PPA.
 Незавершённое `.venv` после ошибки `ensurepip is not available` автоматически
 пересоздаётся.
 
-Обычный `./deploy.sh` только устанавливает и проверяет приложение. Для
+Обычный `./deploy.sh` устанавливает приложение и создаёт `.env`. Если секреты ещё
+не заполнены, установка успешно сохраняется, но бот не запускается. Для
 постоянного запуска через systemd используется:
 
 ```bash
